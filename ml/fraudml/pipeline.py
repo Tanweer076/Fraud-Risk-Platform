@@ -3,7 +3,9 @@
     fraudml label --month-dir "data/raw/OneRecon_DataSet/Historical Data/july" \
                   --rules data/raw/OneRecon_DataSet/business_rules.txt --out data/processed
 
-For each month folder: ingest GL, MA and FA, validate business rules, link the systems,
+    fraudml eda --processed data/processed --out ml/reports/eda_report.html
+
+For each month folder `label` will: ingest GL, MA and FA, validate business rules, link the systems,
 derive break labels, write `labelled_<period>.parquet` and print a JSON summary.
 """
 
@@ -62,6 +64,18 @@ def label_month(
     return period, label_breaks(link_systems(records, join_map))
 
 
+def run_eda(processed: Path, out: Path) -> int:
+    from fraudml.eda.report import write_report  # matplotlib is only needed here
+
+    try:
+        path = write_report(processed, out)
+    except FileNotFoundError as exc:
+        log.error("%s", exc)
+        return 1
+    log.info("EDA report written to %s", path)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="fraudml")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -71,9 +85,14 @@ def main(argv: list[str] | None = None) -> int:
     lab.add_argument("--out", type=Path, default=Path("data/processed"))
     lab.add_argument("--ma-source", choices=["embedded", "api"], default="embedded")
     lab.add_argument("--ma-url", default="http://localhost:5000")
+    eda = sub.add_parser("eda", help="Write the EDA HTML report from labelled parquet files")
+    eda.add_argument("--processed", type=Path, default=Path("data/processed"))
+    eda.add_argument("--out", type=Path, default=Path("ml/reports/eda_report.html"))
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    if args.command == "eda":
+        return run_eda(args.processed, args.out)
     if args.ma_source == "api" and len(args.month_dir) > 1:
         parser.error("--ma-source api serves one month at a time; pass a single --month-dir")
 

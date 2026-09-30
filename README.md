@@ -9,8 +9,8 @@ The data comes from three financial systems that record the same transactions: G
 | Step | State |
 |---|---|
 | 1. Ingestion, linking, break labelling | done |
-| 2. EDA | next |
-| 3. Features, models, risk score, explanations | planned |
+| 2. EDA report | done |
+| 3. Features, models, risk score, explanations | next |
 | 4. PostgreSQL + FastAPI | planned |
 | 5. React dashboard | planned |
 | 6. Docker, CI/CD, deployment | CI only |
@@ -60,6 +60,24 @@ Current results:
 | `key_mismatch` | MA or FA key differs from the one the join map gives for the GL account |
 | `rule_violation` | A record breaks a rule in `business_rules.txt`, or its date is outside the month |
 
+## EDA report
+
+```bash
+make eda   # after make label
+```
+
+Writes `ml/reports/eda_report.html`, a self-contained page with volumes, which systems hold each transaction, break types and how they overlap, suspicious rate by segment with 95% intervals, the size of amount and date mismatches, account history and month-to-month drift.
+
+What it shows on the current data:
+
+- Amount mismatch is the most common break (1,366), then rule violations (450) and date mismatches (386).
+- 437 of the 450 rule violations are also amount mismatches: one system holds a negative or over-limit amount.
+- The suspicious rate barely changes across currency, country, description, weekday, amount band or part of month (5.8% to 7.6%).
+- Accounts that broke last month are not more likely to break this month (8.2% vs 8.9% in August).
+- Amount distributions do not drift between months (PSI at most 0.003).
+
+So the models should be built on cross-system deviation features and rule checks rather than a transaction's own attributes.
+
 ## Tests
 
 ```bash
@@ -71,7 +89,7 @@ make lint   # ruff
 
 ```
 docs/architecture.md   system design
-ml/fraudml/            ML package (ingest, canonical, labels, pipeline CLI)
+ml/fraudml/            ML package (ingest, canonical, labels, eda, pipeline CLI)
 ml/tests/              unit and CLI tests with synthetic fixtures
 data/                  raw / interim / processed data (git-ignored)
 ```

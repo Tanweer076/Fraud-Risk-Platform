@@ -13,6 +13,7 @@ data/interim/*
 data/processed/*
 !data/**/.gitkeep
 ml/artifacts/
+ml/reports/
 mlruns/
 
 # Env and editors
