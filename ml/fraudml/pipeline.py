@@ -4,6 +4,7 @@
                   --rules data/raw/OneRecon_DataSet/business_rules.txt --out data/processed
 
     fraudml eda --processed data/processed --out ml/reports/eda_report.html
+    fraudml train --processed data/processed --out ml/artifacts
 
 For each month folder `label` will: ingest GL, MA and FA, validate business rules, link the systems,
 derive break labels, write `labelled_<period>.parquet` and print a JSON summary.
@@ -76,6 +77,27 @@ def run_eda(processed: Path, out: Path) -> int:
     return 0
 
 
+def run_train(processed: Path, out: Path, test_period: str | None) -> int:
+    from fraudml.models.train import train
+
+    try:
+        meta = train(processed, out, test_period)
+    except (FileNotFoundError, ValueError) as exc:
+        log.error("%s", exc)
+        return 1
+    print(
+        json.dumps(
+            {
+                "version": meta["version"],
+                "champion": meta["champion"]["model"],
+                "test": meta["champion"]["test"],
+            },
+            indent=2,
+        )
+    )
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="fraudml")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -88,11 +110,17 @@ def main(argv: list[str] | None = None) -> int:
     eda = sub.add_parser("eda", help="Write the EDA HTML report from labelled parquet files")
     eda.add_argument("--processed", type=Path, default=Path("data/processed"))
     eda.add_argument("--out", type=Path, default=Path("ml/reports/eda_report.html"))
+    trn = sub.add_parser("train", help="Train, compare and save the risk model")
+    trn.add_argument("--processed", type=Path, default=Path("data/processed"))
+    trn.add_argument("--out", type=Path, default=Path("ml/artifacts"))
+    trn.add_argument("--test-period", help="YYYYMM held out as the test month (default: latest)")
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     if args.command == "eda":
         return run_eda(args.processed, args.out)
+    if args.command == "train":
+        return run_train(args.processed, args.out, args.test_period)
     if args.ma_source == "api" and len(args.month_dir) > 1:
         parser.error("--ma-source api serves one month at a time; pass a single --month-dir")
 

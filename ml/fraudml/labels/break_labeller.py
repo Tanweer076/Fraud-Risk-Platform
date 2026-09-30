@@ -12,6 +12,7 @@ A transaction is suspicious when any of these break types applies:
 
 from itertools import combinations
 
+import numpy as np
 import pandas as pd
 
 from fraudml.canonical.schema import SYSTEMS
@@ -67,9 +68,15 @@ def label_breaks(linked: pd.DataFrame) -> pd.DataFrame:
 
     rule_cols = [f"rule_violations_{s}" for s in SYSTEMS if f"rule_violations_{s}" in df.columns]
     if rule_cols:
+        # Lists become numpy arrays after a Parquet round trip; accept both.
         flags["rule_violation"] = (
             df[rule_cols]
-            .apply(lambda row: any(isinstance(v, list) and v for v in row), axis=1)
+            .apply(
+                lambda row: any(
+                    isinstance(v, (list, tuple, np.ndarray)) and len(v) > 0 for v in row
+                ),
+                axis=1,
+            )
             .astype(bool)
         )
     else:

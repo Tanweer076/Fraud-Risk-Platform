@@ -10,8 +10,8 @@ The data comes from three financial systems that record the same transactions: G
 |---|---|
 | 1. Ingestion, linking, break labelling | done |
 | 2. EDA report | done |
-| 3. Features, models, risk score, explanations | next |
-| 4. PostgreSQL + FastAPI | planned |
+| 3. Features, models, risk score, explanations | done |
+| 4. PostgreSQL + FastAPI | next |
 | 5. React dashboard | planned |
 | 6. Docker, CI/CD, deployment | CI only |
 
@@ -78,6 +78,66 @@ What it shows on the current data:
 
 So the models should be built on cross-system deviation features and rule checks rather than a transaction's own attributes.
 
+## Features, models and risk score
+
+```bash
+make train   # after make label
+```
+
+This builds 34 features in four groups:
+
+| Group | Examples |
+|---|---|
+| Cross-system | present in GL/MA/FA, relative amount difference per pair, sign conflict, largest date gap, number of currencies, unmapped account, key mismatch |
+| Rules | number of rule violations, negative amount, amount over 100,000, date outside the month |
+| Behavioural | account's earlier transaction count, amount z-score and ratio to its previous maximum, days since last transaction, first use of a currency, breaks in earlier months |
+| Attributes | amount, round amount, day of month, weekday, month end, currency, country, description |
+
+Behavioural features only look at the account's transactions on earlier days, and at labels from earlier months.
+
+It then trains and compares logistic regression, random forest and LightGBM, plus two reference models: LightGBM on behavioural and attribute features only, and an Isolation Forest that never sees labels. The latest month (August) is held out as an out-of-time test. Earlier months are split 80/20 into train and validation. Validation picks the champion (restricted to models that can explain single predictions), fits an isotonic calibrator and sets the threshold.
+
+Each run is saved to `ml/artifacts/model_vN/` as:
+- `model.joblib`: preprocessing, model, calibrator, feature list, threshold and metadata
+- `metadata.json`
+- `model_report.md`
+
+`ml/artifacts/LATEST` names the newest run.
+
+### Risk score
+
+- **Model score** = round(100 × calibrated probability).
+- **Rule floors.** Deterministic break checks set a minimum score:
+  - rule violation: 90
+  - missing from a system, unmapped account or key mismatch: 80
+  - amount, date or currency mismatch: 70
+- **Risk score** = the higher of the model score and the floor.
+- **Bands:** low 0–39, medium 40–69, high 70–89, critical 90–100.
+
+`fraudml.scoring.Scorer` returns for each transaction:
+- the probability and scores
+- the band
+- rule hits, each with a sentence
+- up to five model factors, with plain-language reasons
+
+Model factors come from LightGBM's exact TreeSHAP contributions, or coefficient × value for logistic regression.
+
+### Results (test month 2026-08)
+
+| Model | Test PR-AUC | Test ROC-AUC |
+|---|---|---|
+| Logistic regression | 0.941 | 0.965 |
+| Random forest | 0.940 | 0.966 |
+| LightGBM (champion) | 0.940 | 0.965 |
+| LightGBM, behavioural + attributes only | 0.104 | 0.512 |
+| Isolation Forest, no labels | 0.924 | 0.958 |
+
+What the numbers mean:
+- **Labelled models reproduce the rules.** The label is defined by cross-system checks, so the supervised models learn those checks almost exactly. On break types seen in training they reach 100% recall at 100% precision.
+- **They miss the new break type.** "Unmapped account" first appears in August, and the model alone catches only 9% of those 194 transactions. With rule floors, recall is 100% for every break type.
+- **No signal in behaviour or attributes.** Without the cross-system features the model is no better than chance (ROC-AUC 0.51), which confirms the EDA.
+- **Isolation Forest works without labels.** It never sees labels, yet it finds most breaks. It is the component to lean on for break patterns nobody has labelled yet.
+
 ## Tests
 
 ```bash
@@ -89,7 +149,9 @@ make lint   # ruff
 
 ```
 docs/architecture.md   system design
-ml/fraudml/            ML package (ingest, canonical, labels, eda, pipeline CLI)
+ml/fraudml/            ML package (ingest, canonical, labels, eda, features, models,
+                       scoring, pipeline CLI)
+ml/artifacts/          saved models (git-ignored)
 ml/tests/              unit and CLI tests with synthetic fixtures
 data/                  raw / interim / processed data (git-ignored)
 ```

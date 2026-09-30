@@ -91,3 +91,16 @@ def test_cli_returns_error_code_for_missing_files(tmp_path, rules_path):
     empty.mkdir()
     code = main(["label", "--month-dir", str(empty), "--rules", str(rules_path)])
     assert code == 1
+
+
+def test_rule_violations_survive_parquet_round_trip(tmp_path, rules_path):
+    from fraudml.labels.break_labeller import label_breaks
+
+    rows = _with(0, amount="150000.00")
+    _, labelled = label_month(
+        write_month(tmp_path, gl_rows=rows, ma_rows=rows, fa_rows=rows), rules_path
+    )
+    labelled.to_parquet(tmp_path / "l.parquet", index=False)
+    reloaded = pd.read_parquet(tmp_path / "l.parquet")  # lists come back as numpy arrays
+    relabelled = label_breaks(reloaded).set_index("transaction_id")
+    assert list(relabelled.loc["AAAAAAAAAAAAAAA1", "break_types"]) == ["rule_violation"]
