@@ -4,8 +4,7 @@ from fraudml.errors import IngestionError
 from fraudml.ingest.gl_xml import read_gl_xml
 from fraudml.ingest.ma_api import read_ma_embedded
 from fraudml.ingest.rules import parse_rules, validate
-
-from .conftest import BASE, write_month
+from fraudml.testing import BASE, write_month
 
 
 def test_parse_rules_reads_every_line(rules_path):

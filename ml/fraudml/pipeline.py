@@ -26,7 +26,7 @@ from fraudml.ingest.fa_csv import read_fa_csv
 from fraudml.ingest.gl_xml import read_gl_xml
 from fraudml.ingest.join_map import read_join_map
 from fraudml.ingest.ma_api import read_ma_api, read_ma_embedded
-from fraudml.ingest.rules import parse_rules, validate
+from fraudml.ingest.rules import Rule, parse_rules, validate
 from fraudml.labels.break_labeller import label_breaks, summarise
 
 log = logging.getLogger("fraudml")
@@ -44,7 +44,6 @@ def label_month(
 ) -> tuple[str, pd.DataFrame]:
     gl_path = _one(month_dir, "gl_report_*.xml")
     period = re.search(r"(\d{6})", gl_path.name).group(1)
-    rules = parse_rules(rules_path)
 
     started = time.perf_counter()
     records = {
@@ -57,12 +56,19 @@ def label_month(
         ),
     }
     join_map = read_join_map(_one(month_dir, "join_map.txt"))
+    labelled = label_records(records, join_map, parse_rules(rules_path), period)
+    log.info("%s ingested in %.1fs", period, time.perf_counter() - started)
+    return period, labelled
+
+
+def label_records(
+    records: dict[str, pd.DataFrame], join_map: pd.DataFrame, rules: list[Rule], period: str
+) -> pd.DataFrame:
+    """Validate each system's canonical records, link them and derive break labels."""
     for system, df in records.items():
         df["rule_violations"] = validate(df, rules, period=period)
         log.info("%s %s: %d records", period, system.upper(), len(df))
-    log.info("%s ingested in %.1fs", period, time.perf_counter() - started)
-
-    return period, label_breaks(link_systems(records, join_map))
+    return label_breaks(link_systems(records, join_map))
 
 
 def run_eda(processed: Path, out: Path) -> int:

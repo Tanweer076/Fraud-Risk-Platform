@@ -38,6 +38,14 @@ from fraudml.models.candidates import (
     make_candidates,
     make_isolation_forest,
 )
+from fraudml.models.evaluation import (
+    calibration,
+    confusion,
+    feature_importance,
+    pr_curve,
+    roc_points,
+    score_histogram,
+)
 from fraudml.models.metrics import best_f1_threshold, evaluate
 from fraudml.scoring.risk import BANDS, RULE_FLOORS, risk_score
 
@@ -201,6 +209,16 @@ def train(processed_dir: str | Path, out_dir: str | Path, test_period: str | Non
         "bands": BANDS,
         "champion": champion,
         "comparison": results,
+        "evaluation": {
+            "period": test_period,
+            "pr_curve": pr_curve(y[te_idx], pc_te),
+            "roc_curve": roc_points(y[te_idx], pc_te),
+            "calibration": calibration(y[te_idx], pc_te),
+            "confusion_model": confusion(y[te_idx], model_flag),
+            "confusion_with_rule_floors": confusion(y[te_idx], hybrid_flag),
+            "score_histogram": score_histogram(hybrid_scores),
+            "feature_importance": feature_importance(pipeline, X.iloc[te_idx][ALL_FEATURES]),
+        },
         "train_seconds": round(time.perf_counter() - started, 1),
     }
     joblib.dump(

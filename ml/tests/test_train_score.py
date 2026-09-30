@@ -8,14 +8,11 @@ from fraudml.eda.analysis import load_labelled
 from fraudml.models.train import train
 from fraudml.pipeline import main
 from fraudml.scoring.scorer import Scorer
-
-from .conftest import make_dataset
+from fraudml.testing import RULES, make_dataset
 
 
 @pytest.fixture(scope="module")
 def trained(tmp_path_factory):
-    from .conftest import RULES
-
     root = tmp_path_factory.mktemp("ds")
     rules = root / "business_rules.txt"
     rules.write_text(RULES)
@@ -53,6 +50,20 @@ def test_models_learn_cross_system_breaks(trained):
     champ = meta["champion"]
     assert champ["test"]["pr_auc"] > 0.9
     assert champ["test_hybrid_high_or_above"]["recall"] == pytest.approx(1.0)
+
+
+def test_metadata_has_evaluation_for_the_models_page(trained):
+    _, _, meta = trained
+    ev = meta["evaluation"]
+    assert ev["period"] == "202608"
+    for key in ("confusion_model", "confusion_with_rule_floors"):
+        assert sum(ev[key].values()) == meta["n_test"]
+    assert sum(b["count"] for b in ev["score_histogram"]) == meta["n_test"]
+    assert sum(b["count"] for b in ev["calibration"]) == meta["n_test"]
+    assert 2 <= len(ev["pr_curve"]) <= 100 and 2 <= len(ev["roc_curve"]) <= 100
+    assert ev["roc_curve"][0]["fpr"] == 0.0 and ev["roc_curve"][-1]["tpr"] == 1.0
+    importance = [f["mean_abs_contribution"] for f in ev["feature_importance"]]
+    assert importance == sorted(importance, reverse=True)
 
 
 def test_second_run_gets_next_version(trained):
@@ -99,9 +110,31 @@ def test_scorer_scores_breaks_high_with_reasons(trained):
         "probability",
         "model_score",
         "band",
+        "exposure_usd",
+        "priority",
         "top_factors",
         "model_version",
     }
+    assert (clean["exposure_usd"] == 0).all()
+    assert (suspicious["exposure_usd"] > 0).all()
+    assert (out["priority"] <= out["risk_score"]).all()
+    assert (out["priority"] >= out["risk_score"] // 2).all()
+
+
+def test_scorer_explains_only_rows_at_or_above_threshold(trained):
+    root, processed, _ = trained
+    scorer = Scorer.load(root / "artifacts" / "model_v1" / "model.joblib")
+    df = load_labelled(processed)
+    aug = df[df["period"] == "202608"]
+    sample = pd.concat([aug[~aug["is_suspicious"]].head(3), aug[aug["is_suspicious"]].head(3)])
+    history = df[df["period"] < "202608"]
+
+    out = scorer.score(_linked(sample), history=history, explain_min_score=40)
+    full = scorer.score(_linked(sample), history=history)
+
+    assert (out.iloc[:3]["top_factors"].map(len) == 0).all()
+    assert out.iloc[3:]["top_factors"].tolist() == full.iloc[3:]["top_factors"].tolist()
+    assert out["risk_score"].tolist() == full["risk_score"].tolist()
 
 
 def test_artifact_contains_pipeline_calibrator_and_features(trained):

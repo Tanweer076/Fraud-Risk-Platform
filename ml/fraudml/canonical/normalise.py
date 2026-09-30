@@ -32,3 +32,12 @@ def to_canonical(raw: pd.DataFrame, system: str) -> pd.DataFrame:
     )
     df["source_system"] = system
     return df[CANONICAL_COLUMNS].reset_index(drop=True)
+
+
+def empty_canonical(system: str) -> pd.DataFrame:
+    """A canonical frame with no rows, for a system that has no record of a transaction."""
+    df = pd.DataFrame({c: pd.Series(dtype="string") for c in CANONICAL_COLUMNS})
+    df["amount"] = df["amount"].astype("float64")
+    df["transaction_date"] = pd.to_datetime(df["transaction_date"])
+    df["source_system"] = pd.Series([], dtype=object)
+    return df

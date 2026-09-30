@@ -97,19 +97,19 @@ fraud-risk-platform/
 │   ├── pyproject.toml
 │   ├── alembic/                    # migrations
 │   ├── app/
-│   │   ├── main.py                 # app factory, lifespan loads model
-│   │   ├── core/                   # config.py (pydantic-settings), security.py, logging.py
+│   │   ├── main.py                 # app factory, lifespan loads rules + model
+│   │   ├── cli.py                  # fraudapi create-user / ingest / sync-models
+│   │   ├── core/                   # config.py (pydantic-settings), security.py, logging.py, errors.py
 │   │   ├── db/                     # session.py, base.py
 │   │   ├── models/                 # SQLAlchemy ORM tables
 │   │   ├── schemas/                # Pydantic request/response models
-│   │   ├── repositories/           # data access per aggregate
-│   │   ├── services/               # scoring_service, ingestion_service,
-│   │   │                           # analytics_service, review_service, model_service
-│   │   ├── ml/                     # model_loader.py, feature_adapter.py (wraps fraudml)
-│   │   ├── api/v1/                 # auth, transactions, predictions, analytics,
-│   │   │                           # models, ingestion, reviews, health routers
-│   │   └── workers/                # batch scoring / ingestion jobs
-│   └── tests/                      # unit + API tests (positive & negative)
+│   │   ├── repositories/           # transaction queries and filters
+│   │   ├── services/               # scoring, ingestion, analytics, reviews,
+│   │   │                           # models, users, audit
+│   │   ├── ml/                     # registry.py (model versions), frames.py (rows <-> fraudml frames)
+│   │   └── api/v1/                 # auth, users, transactions, predictions, analytics,
+│   │                               # models, ingestion, reviews, reports, audit, health
+│   └── tests/                      # API tests against PostgreSQL (positive & negative)
 │
 ├── frontend/
 │   ├── package.json
@@ -259,13 +259,13 @@ Request → Router (api/v1) → Service → Repository → PostgreSQL
                               └→ ML adapter (fraudml features + loaded pipeline)
 ```
 
-- **Layers:** routers only handle HTTP and validation. Services hold the business logic (scoring, ingestion, analytics, review). Repositories hold SQL (SQLAlchemy 2.0 async). The ML adapter is a singleton loaded in the FastAPI `lifespan` hook and hot-swappable when the active model changes.
-- **Validation:** Pydantic v2 schemas enforce formats from the business rules (TransactionID hex-16, ACC\d{4}, ISO date, currency/country enums). Invalid input returns 422 with field messages. The rule engine runs again in the service, so the same rules apply to batch loads.
-- **Auth:** JWT (OAuth2 password flow), bcrypt hashes, and roles `analyst` (investigator), `approver` and `admin`. This gives the PDF's maker-checker: analysts submit a finding, approvers confirm or reject it.
-- **Background work:** FastAPI `BackgroundTasks` for the MVP. Batch ingestion and scoring move to **Celery + Redis** once files get large.
-- **Cross-cutting:** structured JSON logging with a request id, a global exception handler, CORS locked to the frontend origin, rate limiting on `/predictions`, and a `/metrics` Prometheus endpoint.
+- **Layers:** routers only handle HTTP and validation. Services hold the business logic (scoring, ingestion, analytics, review). Repositories hold SQL (SQLAlchemy 2.0 with sync sessions on psycopg 3; FastAPI runs the sync endpoints in its thread pool, and the pandas scoring code is sync anyway). The model registry loads the active artifact in the `lifespan` hook and checks the active version in the database on every scoring call, so all workers follow an activation without a restart.
+- **Validation:** Pydantic v2 schemas check structure and types (TransactionID pattern, system names, ISO dates, numeric amounts, 3-letter currency). Malformed input returns 422 with field messages. Business-rule breaches (R01–R25) are not rejected: they are scored as a `rule_violation` break with its reason, because a breach is what reviewers need to see. The same labeller runs on single submissions and month loads.
+- **Auth:** JWT (OAuth2 password flow, PyJWT HS256), bcrypt hashes, and roles `analyst` (investigator), `approver` and `admin`. This gives the PDF's maker-checker: analysts submit a finding, approvers confirm or reject it, and nobody can decide their own review.
+- **Background work:** FastAPI `BackgroundTasks` for the MVP (month uploads return 202 and a batch id to poll). Batch ingestion and scoring move to **Celery + Redis** once files get large.
+- **Cross-cutting:** structured JSON logging with a request id (also stored on audit rows), a global exception handler, and CORS locked to the frontend origin. Rate limiting on `/predictions` and a `/metrics` Prometheus endpoint are planned for the deployment step.
 - **Config:** `pydantic-settings` reads env vars (DB URL, JWT secret, model path). No credentials live in code.
-- **Performance target:** single scoring < 100 ms p95. Account history lookups use indexed queries on `(gl_account_id, transaction_date)`.
+- **Performance target:** single scoring < 100 ms p95. Account history lookups use indexed queries on `(gl_account_id, transaction_date)`. Measured in step 4: 0.3–0.6 s per single transaction (pandas overhead in the shared feature code) and about 20 s to load and score a month of 22k transactions. Closing the single-call gap is a follow-up.
 
 ---
 
@@ -274,28 +274,28 @@ Request → Router (api/v1) → Service → Repository → PostgreSQL
 ```mermaid
 erDiagram
   users ||--o{ reviews : writes
-  ingestion_batches ||--o{ source_records : loads
-  source_records }o--|| transactions : "linked into"
-  account_key_map ||--o{ transactions : resolves
+  ingestion_batches ||--o{ transactions : loads
+  ingestion_batches ||--o{ account_key_map : loads
+  account_key_map ||..o{ transactions : resolves
   transactions ||--o{ predictions : scored_by
   model_versions ||--o{ predictions : produced
-  predictions ||--o{ reviews : reviewed_in
+  transactions ||--o{ reviews : reviewed_in
+  predictions ||--o{ reviews : "based on"
   users ||--o{ audit_log : acts
 ```
 
 | Table | Key columns | Notes |
 |---|---|---|
-| `users` | id, email, password_hash, role (analyst/approver/admin), is_active, created_at | |
-| `ingestion_batches` | id, source_system (GL/MA/FA/JOIN_MAP/MANUAL), period (YYYYMM), file_name, method (file/api/db), records_loaded, records_rejected, duration_ms, status, created_by, created_at | PDF asks to record method, count and time |
-| `source_records` | id, batch_id FK, source_system, transaction_id, account_key, transaction_date, amount NUMERIC(18,2), currency CHAR(3), country CHAR(2), description, rule_violations JSONB, raw JSONB | one row per system per transaction |
-| `account_key_map` | id, period, gl_account_id, ma_customer_key, fa_key, entity, effective_from, effective_to | join map, per month |
-| `transactions` | id, transaction_id UNIQUE, period, gl_account_id, transaction_date, amount_gl, amount_ma, amount_fa, currency_gl/ma/fa, date_gl/ma/fa, country, description, in_gl, in_ma, in_fa, is_suspicious (label, nullable for new), break_types TEXT[], created_at | linked, canonical view used by features and UI |
-| `model_versions` | id, version, algorithm, artifact_uri, feature_list JSONB, metrics JSONB, thresholds JSONB, trained_on (date range), is_active, created_at | one active version |
-| `predictions` | id, transaction_id FK, model_version_id FK, probability, risk_score SMALLINT, risk_band, priority, predicted_break_type, top_factors JSONB, rule_hits JSONB, latency_ms, created_at | history kept; latest per txn via index |
-| `reviews` | id, prediction_id FK, analyst_id, analyst_decision (confirmed/false_positive), analyst_note, approver_id, approval_status (pending/approved/rejected), approved_at | maker-checker; confirmed outcomes become future labels |
-| `audit_log` | id, user_id, action, entity, entity_id, before JSONB, after JSONB, created_at | append-only |
+| `users` | id, email, full_name, password_hash, role (analyst/approver/admin), is_active, created_at | |
+| `ingestion_batches` | id, period (YYYYMM), method (file/api/cli), status, files JSONB, records JSONB (rows read per system), summary JSONB, transactions_loaded, transactions_scored, error, duration_ms, created_by_id, started_at, finished_at | PDF asks to record method, count and time |
+| `account_key_map` | id, period, gl_account_id, ma_customer_key, fa_key, entity, effective_from, effective_to, batch_id | join map, per month; a reload replaces the month |
+| `transactions` | id, transaction_id UNIQUE, period, source (batch/api), batch_id; per system `in_*` and `{account_key, transaction_date, amount, currency, country, description, rule_violations}_{gl,ma,fa}`; coalesced gl_account_id, transaction_date, amount, currency, country, description; expected_ma_key, expected_fa_key, gl_account_mapped; is_suspicious, break_types JSONB; latest risk_score, risk_band, probability, exposure_usd, priority, model_version, scored_at; review_outcome | one linked row per TransactionID, holding each system's record side by side; a late system's record is merged in and the row re-scored |
+| `model_versions` | id, version, algorithm, artifact_path, features JSONB, threshold, metrics JSONB, train_periods, test_period, details JSONB (full metadata, incl. evaluation curves), is_active, trained_at | one active version (partial unique index) |
+| `predictions` | id, transaction_pk FK, model_version_id FK, probability, model_score, risk_score, risk_band, exposure_usd, priority, break_types, rule_hits JSONB, top_factors JSONB, source (api/batch), latency_ms, created_at | history kept; the latest is copied onto the transaction |
+| `reviews` | id, transaction_pk FK, prediction_id FK, analyst_id, decision (confirmed/false_positive), note, status (pending/approved/rejected), approver_id, approver_note, decided_at, created_at | maker-checker; one open review per transaction (partial unique index); approved outcomes are meant to feed retraining (not wired yet) |
+| `audit_log` | id, user_id, action, entity, entity_id, before JSONB, after JSONB, request_id, created_at | append-only |
 
-Indexes cover `transactions(gl_account_id, transaction_date)`, `transactions(period, is_suspicious)`, `predictions(transaction_id, created_at DESC)`, `predictions(risk_band, created_at)` and `reviews(approval_status)`. A materialised view, `mv_daily_risk_stats`, pre-aggregates dashboard numbers and is refreshed after each batch.
+Indexes cover `transactions(gl_account_id, transaction_date)`, `transactions(period, is_suspicious)`, `transactions(priority)`, `transactions(risk_band)`, a GIN index on `transactions(break_types)`, `predictions(transaction_pk, created_at)`, `predictions(risk_band, created_at)` and `reviews(status, created_at)`. The latest score lives on `transactions`, so dashboard queries read one table. A materialised view (`mv_daily_risk_stats`) is only needed if those queries get slow; it is not built yet.
 
 ---
 
@@ -305,29 +305,30 @@ Indexes cover `transactions(gl_account_id, transaction_date)`, `transactions(per
 |---|---|---|---|
 | POST | `/auth/login` | Get JWT | public |
 | GET | `/auth/me` | Current user | any |
-| GET | `/health` · `/ready` | Liveness / readiness (DB + model loaded) | public |
-| **POST** | **`/predictions`** | Score one transaction. Body: transaction fields + optional counterpart records. Returns probability, risk_score, band, priority, top_factors, rule_hits, model_version | analyst |
-| POST | `/predictions/batch` | Score up to N transactions, or a stored period (async job id) | analyst |
+| GET · POST · PATCH | `/users` · `/users/{id}` | List, create, change role or deactivate users | admin |
+| GET | `/health` · `/ready` | Liveness / readiness (DB, model loaded, rules read) | public |
+| **POST** | **`/predictions`** | Score one transaction. Body: one system's record + optional counterpart records. Merges with records already stored for that TransactionID. Returns probability, risk_score, band, exposure_usd, priority, top_factors, rule_hits, model_version | analyst |
+| POST | `/predictions/batch` | Score up to `BATCH_MAX_ITEMS` submissions; each succeeds or fails on its own | analyst |
 | GET | `/predictions/{id}` | One prediction with explanation | any |
-| GET | `/transactions` | Paginated history; filters: period, band, score range, break_type, currency, country, account, date range, search; sort | any |
-| GET | `/transactions/{transaction_id}` | Linked GL/MA/FA values side by side + prediction history | any |
-| POST | `/ingestion/upload` | Upload GL XML / FA CSV / join map / XLSX / JSON for a period | analyst |
-| POST | `/ingestion/ma-pull` | Pull MA from its REST API (base URL, period) | analyst |
-| GET | `/ingestion/batches` · `/ingestion/batches/{id}` | Batch status, counts, rejects | any |
-| GET | `/analytics/summary` | KPIs: totals, suspicious rate, avg score, open reviews, amount at risk | any |
+| GET | `/transactions` | Paginated history; filters: period, band, score range, break_type, currency, country, account, date range, suspicious, reviewed, search; sort | any |
+| GET | `/transactions/{transaction_id}` | Linked GL/MA/FA values side by side + prediction and review history | any |
+| POST | `/ingestion/upload` | Load a month: GL XML, FA CSV, join map, and MA as a file (.py/.csv/.json) or `ma_url` to pull it from its REST API (allowlisted hosts). Returns 202 with a batch id | analyst |
+| GET | `/ingestion/batches` · `/ingestion/batches/{id}` | Batch status, method, counts per system, duration, error | any |
+| GET | `/analytics/summary` | KPIs: totals, suspicious rate, avg score, bands, open reviews, USD at risk | any |
 | GET | `/analytics/risk-distribution` | Histogram of scores, counts per band | any |
-| GET | `/analytics/trends` | Daily/monthly volume and suspicious rate | any |
-| GET | `/analytics/breakdown?by=currency\|country\|description\|break_type\|account` | Segment stats | any |
-| GET | `/analytics/top-accounts` | Accounts ranked by risk / repeat breaks | any |
+| GET | `/analytics/trends?granularity=day\|month` | Volume, suspicious rate and average score over time | any |
+| GET | `/analytics/breakdown?by=currency\|country\|description\|period\|band\|break_type` | Segment stats | any |
+| GET | `/analytics/top-accounts` | Accounts ranked by suspicious count, then USD at stake | any |
 | GET | `/models` · `/models/active` | Versions and metrics | any |
-| GET | `/models/{id}/evaluation` | PR/ROC curve points, confusion matrix, feature importance | any |
+| GET | `/models/{id}/evaluation` | PR/ROC curve points, confusion matrices, calibration, score histogram, feature importance | any |
 | POST | `/models/{id}/activate` | Promote a version | admin |
-| POST | `/models/train` | Trigger retrain job (async) | admin |
-| GET | `/reviews?status=` | Review queue sorted by priority | analyst/approver |
+| POST | `/models/sync` | Register artifacts trained with `fraudml train` since startup | admin |
+| GET | `/reviews/queue` | Unreviewed transactions at or above `REVIEW_MIN_SCORE`, highest priority first | any |
+| GET | `/reviews?status=` | Reviews and their state | any |
 | POST | `/reviews` | Analyst submits decision + note | analyst |
-| POST | `/reviews/{id}/approve` · `/reject` | Approver decision (single) | approver |
-| POST | `/reviews/bulk-approve` | Bulk approval (list or CSV upload) | approver |
-| GET | `/reports/export?period=&format=csv\|xlsx\|pdf` | Downloadable report | any |
+| POST | `/reviews/{id}/approve` · `/reject` | Approver decision (single); never on one's own review | approver |
+| POST | `/reviews/bulk-approve` | Bulk approval of a list of review ids; returns approved and skipped with reasons | approver |
+| GET | `/reports/export` | CSV of transactions, same filters as `/transactions` | any |
 | GET | `/audit` | Audit trail | admin/approver |
 
 OpenAPI docs are served at `/docs`, and the frontend's typed client is generated from the schema.
@@ -388,13 +389,13 @@ flowchart LR
 | Explainability | SHAP | per-transaction factors |
 | Tracking | MLflow (local) | compare runs |
 | Serialisation | joblib + metadata.json | |
-| API | FastAPI, Pydantic v2, Uvicorn/Gunicorn | async, OpenAPI for free |
-| ORM / migrations | SQLAlchemy 2.0 (async, asyncpg), Alembic | |
+| API | FastAPI, Pydantic v2, pydantic-settings, Uvicorn/Gunicorn | OpenAPI for free |
+| ORM / migrations | SQLAlchemy 2.0 (sync sessions, psycopg 3), Alembic | the scoring code is sync pandas, so async buys nothing yet |
 | DB | PostgreSQL 16 | JSONB for factors, strong indexing |
 | Jobs | Celery + Redis (after MVP) | |
-| Auth | python-jose (JWT), passlib[bcrypt] | |
+| Auth | PyJWT, bcrypt | both maintained; python-jose and passlib are not |
 | Frontend | React 18 + Vite, React Router, TanStack Query, Tailwind + shadcn/ui, Recharts, react-hook-form + zod, axios | |
-| Testing | pytest, pytest-asyncio, httpx TestClient, vitest, React Testing Library, Playwright (e2e) | |
+| Testing | pytest with a real PostgreSQL, FastAPI TestClient, vitest, React Testing Library, Playwright (e2e) | |
 | Quality | ruff, black, mypy, eslint, prettier, pre-commit | |
 | Ops | Docker, docker compose, Nginx, GitHub Actions, Prometheus/Grafana | |
 
@@ -402,17 +403,28 @@ All dependency versions are pinned (`uv` or `poetry` lock files for Python, `pac
 
 ---
 
-## 11. Build order (next steps after this design)
+## 11. Build order
 
-1. `fraudml` ingestion + linking + labelling, with tests against the three months
-2. EDA notebook and report
-3. Features, model comparison, calibration, SHAP, saved artifact
-4. Postgres schema + Alembic + ingestion endpoints
-5. Scoring endpoint + analytics endpoints
-6. React pages: Score → Transactions → Dashboard/Analytics → Models → Reviews
-7. Docker compose, CI, deployment target
+Each step ships as its own pull request.
+
+1. `fraudml` ingestion + linking + labelling, with tests against the three months (done)
+2. EDA notebook and report (done)
+3. Features, model comparison, calibration, explanations, saved artifact (done)
+4. Postgres schema + Alembic, scoring, ingestion, analytics, review and model endpoints (done)
+5. React pages: Score → Transactions → Dashboard/Analytics → Models → Reviews
+6. Docker compose, CI/CD, deployment target, rate limiting and metrics
 
 ## 12. Assumptions and decisions
 - **Label definition (confirmed by Tanweer, 2026-09-30):** cross-system breaks from section 0 are the target for the fraud risk score.
-- The MA data can be read by running its Flask server (as the metadata suggests) or by decoding the embedded payload. The ingestion adapter supports the HTTP route, since that is what the use case tests.
-- Amounts are compared in their stated currency (the data has no FX rates). Materiality for priority uses a static FX table in config.
+- The MA data can be read by running its Flask server (as the metadata suggests) or by decoding the embedded payload. Ingestion supports both: an uploaded `.py` script is decoded without being run, and `ma_url` pulls the records from the REST API.
+- Amounts are compared in their stated currency (the data has no FX rates). Materiality for priority uses a static FX table (`fraudml/scoring/materiality.py`), so exposure is an approximate USD figure.
+
+### Step 4 changes to this design
+
+What the API build changed, and what it left for later:
+
+- **Priority:** `priority = round(risk_score × weight)`, where the weight grows from 0.5 to 1.0 with the USD exposure (the largest amount difference for an amount break, the whole amount for any other break) on a log scale that reaches 1.0 at $1M. A large break outranks a small one with the same risk score.
+- **No `source_records` table:** each system's record is stored as columns on `transactions`, which is what the linker and the transaction detail page need. Uploaded files are kept in `UPLOAD_DIR`.
+- **Late records:** submitting another system's record for a stored TransactionID re-links and re-scores the row; submitting a system's record twice returns 409.
+- **Explanations:** month loads explain rows at or above `EXPLAIN_MIN_SCORE` (default 40); single submissions always get an explanation.
+- **Not built yet:** rate limiting, `/metrics`, `mv_daily_risk_stats`, `/models/train` (training stays a CLI job, then `POST /models/sync`), XLSX/PDF export and CSV bulk approval.

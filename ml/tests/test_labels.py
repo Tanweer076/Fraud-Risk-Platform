@@ -2,10 +2,14 @@ import json
 
 import pandas as pd
 
+from fraudml.canonical.normalise import empty_canonical
+from fraudml.ingest.fa_csv import read_fa_csv
+from fraudml.ingest.gl_xml import read_gl_xml
+from fraudml.ingest.join_map import read_join_map
+from fraudml.ingest.rules import parse_rules
 from fraudml.labels.break_labeller import summarise
-from fraudml.pipeline import label_month, main
-
-from .conftest import BASE, JOIN_MAP, write_month
+from fraudml.pipeline import label_month, label_records, main
+from fraudml.testing import BASE, JOIN_MAP, write_month
 
 
 def _label(tmp_path, rules_path, **kwargs):
@@ -104,3 +108,20 @@ def test_rule_violations_survive_parquet_round_trip(tmp_path, rules_path):
     reloaded = pd.read_parquet(tmp_path / "l.parquet")  # lists come back as numpy arrays
     relabelled = label_breaks(reloaded).set_index("transaction_id")
     assert list(relabelled.loc["AAAAAAAAAAAAAAA1", "break_types"]) == ["rule_violation"]
+
+
+def test_label_records_flags_a_system_with_no_records(tmp_path, rules_path):
+    month = write_month(tmp_path)
+    records = {
+        "gl": read_gl_xml(month / "gl_report_202607.xml"),
+        "ma": empty_canonical("ma"),
+        "fa": read_fa_csv(month / "fa_report_202607.csv"),
+    }
+    labelled = label_records(
+        records, read_join_map(month / "join_map.txt"), parse_rules(rules_path), "202607"
+    )
+    assert len(labelled) == 3
+    assert labelled["brk_missing_in_ma"].all()
+    assert not labelled["brk_missing_in_gl"].any()
+    assert not labelled["brk_amount_mismatch"].any()
+    assert labelled["break_types"].map(lambda b: b == ["missing_in_ma"]).all()

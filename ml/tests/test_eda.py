@@ -6,8 +6,7 @@ import pytest
 from fraudml.eda import analysis as A
 from fraudml.eda.report import render, write_report
 from fraudml.pipeline import label_month, main
-
-from .conftest import write_month
+from fraudml.testing import write_month
 
 
 def _txn(i: int, month: str, day: int) -> tuple:

@@ -87,9 +87,9 @@ def _rule_ids(row: pd.Series) -> str:
 
 
 BREAK_REASONS = {
-    "missing_in_gl": _missing,
-    "missing_in_ma": _missing,
-    "missing_in_fa": _missing,
+    "missing_in_gl": lambda r: "Not found in GL.",
+    "missing_in_ma": lambda r: "Not found in MA.",
+    "missing_in_fa": lambda r: "Not found in FA.",
     "amount_mismatch": lambda r: f"Amounts disagree across systems ({_amounts(r)}).",
     "date_mismatch": lambda r: f"Dates disagree across systems ({_dates(r)}).",
     "currency_mismatch": lambda r: f"Systems disagree on the currency ({_currencies(r)}).",
