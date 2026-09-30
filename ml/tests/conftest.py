@@ -82,3 +82,68 @@ def rules_path(tmp_path: Path) -> Path:
     path = tmp_path / "business_rules.txt"
     path.write_text(RULES)
     return path
+
+
+def make_dataset(
+    root: Path,
+    rules_path: Path,
+    periods=("202606", "202607", "202608"),
+    n: int = 300,
+    break_rates=(0.0, 0.1, 0.1),
+    seed: int = 7,
+) -> Path:
+    """Label a synthetic multi-month dataset and return the processed folder.
+
+    Breaks are injected into MA and FA copies of the GL rows: amount changes, missing FA
+    records, currency changes and date shifts, in roughly equal shares.
+    """
+    import random
+
+    from fraudml.pipeline import label_month
+
+    rng = random.Random(seed)
+    currencies = ["USD", "EUR", "GBP"]
+    countries = ["US", "GB", "DE"]
+    out = root / "processed"
+    out.mkdir(parents=True, exist_ok=True)
+    counter = 0
+    for period, rate in zip(periods, break_rates, strict=True):
+        year, month = period[:4], period[4:]
+        gl, ma, fa = [], [], []
+        for _ in range(n):
+            counter += 1
+            acc = f"ACC{rng.randint(1, 40):04d}"
+            row = (
+                f"{counter:016X}",
+                acc,
+                f"{year}-{month}-{rng.randint(1, 28):02d}",
+                f"{rng.uniform(100, 99_000):.2f}",
+                rng.choice(currencies),
+                rng.choice(countries),
+                rng.choice(["Vendor payment", "Advisory fee", "FX settlement"]),
+            )
+            gl.append(row)
+            ma_row, fa_row = list(row), list(row)
+            if rng.random() < rate:
+                kind = rng.randrange(4)
+                if kind == 0:
+                    ma_row[3] = f"{float(row[3]) * rng.uniform(1.5, 3):.2f}"
+                elif kind == 1:
+                    fa_row = None
+                elif kind == 2:
+                    fa_row[4] = next(c for c in currencies if c != row[4])
+                else:
+                    ma_row[2] = f"{year}-{month}-{min(28, int(row[2][-2:]) + 5):02d}"
+                    if ma_row[2] == row[2]:
+                        ma_row[2] = f"{year}-{month}-01"
+            ma.append(tuple(ma_row))
+            if fa_row is not None:
+                fa.append(tuple(fa_row))
+        accounts = sorted({r[1] for r in gl})
+        join_map = [(a, f"CUS-{a[3:].zfill(6)}", f"FA-{a[3:].zfill(6)}") for a in accounts]
+        month_dir = write_month(
+            root / "raw", gl_rows=gl, ma_rows=ma, fa_rows=fa, join_map=join_map, period=period
+        )
+        _, labelled = label_month(month_dir, rules_path)
+        labelled.to_parquet(out / f"labelled_{period}.parquet", index=False)
+    return out

@@ -1,7 +1,7 @@
 DATASET ?= data/raw/OneRecon_DataSet
 OUT ?= data/processed
 
-.PHONY: install test lint label eda
+.PHONY: install test lint label eda train
 
 install:
 	pip install -e "ml[dev]"
@@ -22,3 +22,6 @@ label:
 
 eda:
 	fraudml eda --processed $(OUT) --out ml/reports/eda_report.html
+
+train:
+	fraudml train --processed $(OUT) --out ml/artifacts
