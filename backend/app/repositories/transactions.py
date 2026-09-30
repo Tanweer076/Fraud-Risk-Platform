@@ -14,6 +14,9 @@ from app.core.errors import BadRequest, NotFound
 from app.ml.frames import HISTORY_COLUMNS, history_frame, join_map_frame
 from app.models import AccountKeyMap, Prediction, Review, Transaction
 
+# Priority tops out at 100, so ties are broken by risk, then by the money at stake.
+DEFAULT_SORT = "-priority,-risk_score,-exposure_usd"
+
 SORTABLE = {
     "priority": Transaction.priority,
     "risk_score": Transaction.risk_score,

@@ -111,17 +111,20 @@ fraud-risk-platform/
 │   │                               # models, ingestion, reviews, reports, audit, health
 │   └── tests/                      # API tests against PostgreSQL (positive & negative)
 │
-├── frontend/
-│   ├── package.json
-│   ├── vite.config.ts
+├── frontend/                       # React dashboard (Vite, TypeScript)
+│   ├── package.json  package-lock.json  vite.config.ts
+│   ├── openapi.json                # the API schema, written by `fraudapi openapi`
 │   └── src/
-│       ├── api/                    # typed client (generated from OpenAPI)
-│       ├── components/             # RiskGauge, FactorBars, KpiCard, charts/
+│       ├── api/                    # client.ts (openapi-fetch), queries.ts (React Query
+│       │                           # hooks), schema.d.ts (generated from openapi.json)
+│       ├── auth/                   # session, sign-in, role checks, route guard
+│       ├── components/             # ui kit, Layout, RiskGauge, FactorBars, charts/
+│       ├── lib/                    # formatting, bands, form schemas, URL filters
 │       ├── pages/                  # Login, Dashboard, Score, Transactions,
 │       │                           # TransactionDetail, Analytics, Models,
 │       │                           # Reviews, Ingestion, Admin
-│       ├── hooks/  store/  routes/  utils/
-│       └── tests/
+│       └── test/                   # Vitest setup, fake API, fixtures
+│                                   # (tests sit next to the code they test)
 │
 └── infra/
     ├── nginx/nginx.conf
@@ -337,18 +340,22 @@ OpenAPI docs are served at `/docs`, and the frontend's typed client is generated
 
 ## 8. Frontend pages (React)
 
-| Page | Contents |
-|---|---|
-| **Login** | Email/password; role-aware redirect |
-| **Dashboard** | KPI cards (transactions, suspicious %, avg risk, amount at risk, open reviews); risk-band donut; daily suspicious-rate trend; top 10 highest-risk transactions |
-| **Score Transaction** | Form (TransactionID, account, date, amount, currency, country, description, source system; optional counterpart values). Result panel: 0–100 gauge, band chip, "why" list with factor bars, rule hits, "send to review" button |
-| **Transactions** | Server-paginated table with filters (period, band, score slider, break type, currency, country, date), search, CSV export |
-| **Transaction Detail** | GL / MA / FA values side by side with mismatches highlighted, SHAP factor waterfall, prediction history, review timeline |
-| **Analytics** | Score histogram, band distribution per month, break types over time, heatmaps by currency × country, amount vs score scatter, top risky accounts |
-| **Model Performance** | Comparison table of all candidates, PR and ROC curves, confusion matrix at the threshold, calibration plot, global feature importance, active version and promote button (admin) |
-| **Review Queue** | Priority-sorted queue; analyst decision + note; approver approve/reject, bulk approve |
-| **Data Ingestion** | Upload files per system and period, pull MA API, batch history with counts, rejects and duration |
-| **Admin** | Users and roles, band thresholds, audit log viewer |
+As built in step 5. Every page reads the same API as any other client; the menu and buttons follow the API's roles, which the API enforces on its own.
+
+| Page | Who | Contents |
+|---|---|---|
+| **Login** | everyone | Email and password; returns to the page that was asked for, and says so when a session ended |
+| **Dashboard** | everyone | Period picker (latest month by default); six KPI tiles; transactions per risk band, linking to the filtered list; daily break rate; the 10 unreviewed transactions with the highest priority |
+| **Score transaction** | analyst, admin | One system's record plus the other systems' records when known, with four ready-made examples. Result: 0–100 gauge and band, priority, USD exposure, model probability, failed checks, factor bars and a link to the stored transaction |
+| **Transactions** | everyone | Filters kept in the URL (period, break type, currency, country, breaks, reviewed, search, account, dates, minimum score, bands), sortable columns, 50 per page, CSV export of the same filters |
+| **Transaction detail** | everyone | GL, MA and FA records side by side with disagreements marked, the join map's expected keys, failed checks and model factors, score history, review timeline, and the review or decision form for the user's role |
+| **Analytics** | everyone | Score distribution in 10-point bins, break rate by day or month, breaks by type, break rate by currency, country or description, accounts with the most breaks |
+| **Models** | everyone; admin activates | Versions, precision and recall of the model alone and with rule floors, comparison of all candidates, PR, ROC and calibration curves, confusion matrices, feature importance, recall per break type, band thresholds and rule floors |
+| **Review queue** | analysts record findings, approvers decide | To review, awaiting approval (bulk approve, never one's own finding), approved, rejected |
+| **Data ingestion** | everyone; analyst and admin upload | Upload form (MA as a file or from its REST API) and a load history that refreshes while a batch runs |
+| **Admin** | approver: audit log; admin: also users | Add users, change roles, deactivate, set passwords; audit log filtered by record type, action and record ID |
+
+Every chart has a table view with the same numbers, risk bands always carry an icon and a label as well as their colour, and the theme follows the system setting unless the user picks light or dark.
 
 ---
 
@@ -394,8 +401,8 @@ flowchart LR
 | DB | PostgreSQL 16 | JSONB for factors, strong indexing |
 | Jobs | Celery + Redis (after MVP) | |
 | Auth | PyJWT, bcrypt | both maintained; python-jose and passlib are not |
-| Frontend | React 18 + Vite, React Router, TanStack Query, Tailwind + shadcn/ui, Recharts, react-hook-form + zod, axios | |
-| Testing | pytest with a real PostgreSQL, FastAPI TestClient, vitest, React Testing Library, Playwright (e2e) | |
+| Frontend | React 19 + Vite, React Router, TanStack Query, Tailwind CSS 4 with hand-written components, Recharts, react-hook-form + zod, openapi-fetch with types from openapi-typescript | a renamed API field fails the type check |
+| Testing | pytest with a real PostgreSQL, FastAPI TestClient, Vitest, React Testing Library against a fake API, Playwright (e2e, planned) | |
 | Quality | ruff, black, mypy, eslint, prettier, pre-commit | |
 | Ops | Docker, docker compose, Nginx, GitHub Actions, Prometheus/Grafana | |
 
@@ -411,7 +418,7 @@ Each step ships as its own pull request.
 2. EDA notebook and report (done)
 3. Features, model comparison, calibration, explanations, saved artifact (done)
 4. Postgres schema + Alembic, scoring, ingestion, analytics, review and model endpoints (done)
-5. React pages: Score → Transactions → Dashboard/Analytics → Models → Reviews
+5. React pages: Score → Transactions → Dashboard/Analytics → Models → Reviews → Ingestion → Admin (done)
 6. Docker compose, CI/CD, deployment target, rate limiting and metrics
 
 ## 12. Assumptions and decisions
@@ -428,3 +435,15 @@ What the API build changed, and what it left for later:
 - **Late records:** submitting another system's record for a stored TransactionID re-links and re-scores the row; submitting a system's record twice returns 409.
 - **Explanations:** month loads explain rows at or above `EXPLAIN_MIN_SCORE` (default 40); single submissions always get an explanation.
 - **Not built yet:** rate limiting, `/metrics`, `mv_daily_risk_stats`, `/models/train` (training stays a CLI job, then `POST /models/sync`), XLSX/PDF export and CSV bulk approval.
+
+### Step 5 changes to this design
+
+What the dashboard build changed, and what it left for later:
+
+- **Charts follow the data.** Scores are close to binary (most transactions score under 10, breaks 70 or more), so the band donut became band bars and the score histogram uses 10-point bins. The currency × country heatmap and the amount-vs-score scatter were not built, because the API has no two-dimensional breakdown or per-point endpoint yet; the Analytics page shows break rate by currency, country and description instead.
+- **Components:** hand-written Tailwind components (`components/ui.tsx`) instead of shadcn/ui. There are few of them, and the dashboard needs no component generator.
+- **Typed client:** `fraudapi openapi` writes the schema to `frontend/openapi.json` without a database, and `npm run gen:api` turns it into TypeScript types. CI fails when either copy is stale; `make api-types` refreshes both.
+- **Session:** the token is kept in sessionStorage, so it survives a reload but not a closed tab. A rejected token or its expiry signs the user out with a message. Moving to an HttpOnly cookie needs API changes and belongs with deployment.
+- **Review order:** priority tops out at 100, so ties are now broken by risk score and then by USD exposure, in the queue, the transaction list and the CSV export.
+- **Admin:** band thresholds and rule floors are part of the saved model, so they are shown read-only on the Models page rather than edited in Admin.
+- **Not built:** a per-month band chart, masked account IDs for demos, and Playwright end-to-end tests (step 6).

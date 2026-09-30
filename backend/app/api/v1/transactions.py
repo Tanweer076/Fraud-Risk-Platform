@@ -54,7 +54,7 @@ def list_transactions(
     db: DB,
     _: CurrentUser,
     filters: Filters,
-    sort: str = "-priority,-risk_score",
+    sort: str = repo.DEFAULT_SORT,
     page: Annotated[int, Query(ge=1)] = 1,
     page_size: Annotated[int, Query(ge=1, le=500)] = 50,
 ):

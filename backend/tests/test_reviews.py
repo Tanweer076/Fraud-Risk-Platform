@@ -22,8 +22,8 @@ def test_queue_holds_flagged_unreviewed_transactions_by_priority(client, loaded,
     assert queue["total"] == 66  # every suspicious synthetic transaction
     scores = [t["risk_score"] for t in queue["items"]]
     assert min(scores) >= 70
-    priorities = [t["priority"] for t in queue["items"]]
-    assert priorities == sorted(priorities, reverse=True)
+    keys = [(t["priority"], t["risk_score"], t["exposure_usd"] or 0) for t in queue["items"]]
+    assert keys == sorted(keys, reverse=True)
     assert _queue(client, auth, min_score=0)["total"] == 900
 
 

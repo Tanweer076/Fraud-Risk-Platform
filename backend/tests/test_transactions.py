@@ -83,6 +83,12 @@ def test_sorting_and_paging(shared):
     assert amounts == sorted(amounts)
 
 
+def test_default_order_breaks_priority_ties_by_money_at_stake(shared):
+    items = _list(shared, suspicious=True, page_size=500)["items"]
+    keys = [(t["priority"], t["risk_score"], t["exposure_usd"] or 0) for t in items]
+    assert keys == sorted(keys, reverse=True)
+
+
 @pytest.mark.parametrize(
     "params",
     [

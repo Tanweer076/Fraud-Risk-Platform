@@ -1,12 +1,13 @@
 DATASET ?= data/raw/OneRecon_DataSet
 OUT ?= data/processed
 
-.PHONY: install test test-ml test-backend lint label eda train migrate seed api
+.PHONY: install test test-ml test-backend test-web lint label eda train migrate seed api \
+	web-install web api-types
 
 install:
 	pip install -e "ml[dev]" -e "backend[dev]"
 
-test: test-ml test-backend
+test: test-ml test-backend test-web
 
 test-ml:
 	cd ml && pytest -q
@@ -15,9 +16,13 @@ test-ml:
 test-backend:
 	cd backend && pytest -q
 
+test-web:
+	cd frontend && npm test
+
 lint:
 	cd ml && ruff check . && ruff format --check .
 	cd backend && ruff check . && ruff format --check .
+	cd frontend && npm run typecheck && npm run lint && npm run format:check
 
 label:
 	fraudml label \
@@ -44,3 +49,15 @@ seed:
 
 api:
 	uvicorn app.main:create_app --factory --reload --port 8000
+
+web-install:
+	cd frontend && npm ci
+
+# The dashboard on http://localhost:5173; it forwards /api to the API on port 8000 (make api).
+web:
+	cd frontend && npm run dev
+
+# After changing the API: refresh the schema and the frontend's types (CI fails if they drift).
+api-types:
+	cd backend && fraudapi openapi --output ../frontend/openapi.json
+	cd frontend && npm run gen:api

@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from app.cli import main
@@ -50,3 +52,13 @@ def test_ingest_and_sync_models(cli_env, dataset, capsys):
     assert "202607: succeeded, 300 transactions, 36 suspicious" in out
     assert main(["ingest", "--month-dir", str(dataset)]) == 1
     assert "Expected one gl_report_*.xml" in capsys.readouterr().err
+
+
+def test_openapi_needs_no_database_or_secrets(tmp_path, monkeypatch):
+    for key in ("DATABASE_URL", "JWT_SECRET", "MODEL_DIR", "RULES_PATH"):
+        monkeypatch.delenv(key, raising=False)
+    out = tmp_path / "openapi.json"
+    assert main(["openapi", "--output", str(out)]) == 0
+    schema = json.loads(out.read_text(encoding="utf-8"))
+    assert "/api/v1/predictions" in schema["paths"]
+    assert "TransactionSummary" in schema["components"]["schemas"]

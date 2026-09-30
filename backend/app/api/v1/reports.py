@@ -60,7 +60,7 @@ def _is_number(text: str) -> bool:
 @router.get("/export")
 def export(request: Request, _: CurrentUser, filters: Filters, format: Literal["csv"] = "csv"):
     """Download transactions matching the same filters as GET /transactions, as CSV."""
-    stmt = repo.order_by(repo.apply_filters(select(Transaction), filters), "-priority,-risk_score")
+    stmt = repo.order_by(repo.apply_filters(select(Transaction), filters), repo.DEFAULT_SORT)
     make_session = request.app.state.sessionmaker
 
     def rows() -> Iterator[str]:
