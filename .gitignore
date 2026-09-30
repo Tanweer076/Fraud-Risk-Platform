@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Data and model artifacts (never committed)
+data/raw/*
+data/interim/*
+data/processed/*
+!data/**/.gitkeep
+ml/artifacts/
+mlruns/
+
+# Env and editors
+.env
+.idea/
+.vscode/
+.DS_Store
+
+# Frontend
+node_modules/
+dist/
