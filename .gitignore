@@ -11,6 +11,7 @@ __pycache__/
 data/raw/*
 data/interim/*
 data/processed/*
+data/uploads/
 !data/**/.gitkeep
 ml/artifacts/
 ml/reports/

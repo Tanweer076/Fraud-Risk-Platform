@@ -3,8 +3,7 @@ import pytest
 
 from fraudml.features.build import ALL_FEATURES, GROUPS, build_features
 from fraudml.pipeline import label_month
-
-from .conftest import BASE, JOIN_MAP, write_month
+from fraudml.testing import BASE, JOIN_MAP, write_month
 
 
 def _features(tmp_path, rules_path, **kwargs):

@@ -11,16 +11,16 @@ The data comes from three financial systems that record the same transactions: G
 | 1. Ingestion, linking, break labelling | done |
 | 2. EDA report | done |
 | 3. Features, models, risk score, explanations | done |
-| 4. PostgreSQL + FastAPI | next |
-| 5. React dashboard | planned |
+| 4. PostgreSQL + FastAPI | done |
+| 5. React dashboard | next |
 | 6. Docker, CI/CD, deployment | CI only |
 
 ## Setup
 
-Requires Python 3.11+.
+Requires Python 3.11+ and, for the API, PostgreSQL 16.
 
 ```bash
-make install
+make install   # installs ml/ (fraudml) and backend/ (fraudapi)
 ```
 
 Put the dataset (not committed) under `data/raw/`, so the folder looks like `data/raw/OneRecon_DataSet/{business_rules.txt, Historical Data/june, Historical Data/july, Current Data/august}`.
@@ -113,12 +113,13 @@ Each run is saved to `ml/artifacts/model_vN/` as:
   - amount, date or currency mismatch: 70
 - **Risk score** = the higher of the model score and the floor.
 - **Bands:** low 0–39, medium 40–69, high 70–89, critical 90–100.
+- **Priority** ranks work within a band by money at stake. Exposure is the amount difference for an amount mismatch, or the whole amount for any other break, converted to USD with a static rate table. Priority = risk score × a weight that grows from 0.5 at 0 USD to 1.0 at 1,000,000 USD, so a 50,000 break comes before a 0.50 one.
 
 `fraudml.scoring.Scorer` returns for each transaction:
 - the probability and scores
-- the band
+- the band, exposure in USD and priority
 - rule hits, each with a sentence
-- up to five model factors, with plain-language reasons
+- up to five model factors, with plain-language reasons (in batch runs, only for rows scoring 40 or more, since explanations are the slow part)
 
 Model factors come from LightGBM's exact TreeSHAP contributions, or coefficient × value for logistic regression.
 
@@ -138,12 +139,58 @@ What the numbers mean:
 - **No signal in behaviour or attributes.** Without the cross-system features the model is no better than chance (ROC-AUC 0.51), which confirms the EDA.
 - **Isolation Forest works without labels.** It never sees labels, yet it finds most breaks. It is the component to lean on for break patterns nobody has labelled yet.
 
+## API (FastAPI + PostgreSQL)
+
+### Run it locally
+
+```bash
+cp .env.example .env              # set JWT_SECRET; the defaults suit a local Postgres
+createdb fraud                    # or any database named in DATABASE_URL
+make migrate                      # Alembic: creates the tables
+fraudapi create-user --email admin@example.com --role admin   # asks for a password
+make seed                         # loads, scores and stores June, July and August
+make api                          # http://localhost:8000/docs
+```
+
+`make seed` scores with the newest model in `ml/artifacts`, so train one first (`make label train`); without a model, months load unscored. A month of 22,000 transactions is read, linked, labelled, scored and stored in about 20 seconds.
+
+### Endpoints (`/api/v1`)
+
+| Area | Endpoints |
+|---|---|
+| Auth | `POST /auth/login` (OAuth2 password form, email as username), `GET /auth/me` |
+| Users (admin) | `GET /users`, `POST /users`, `PATCH /users/{id}` |
+| Health | `GET /health` (liveness), `GET /ready` (database, model and rules loaded) |
+| Scoring | `POST /predictions`, `POST /predictions/batch`, `GET /predictions/{id}` |
+| Transactions | `GET /transactions` (filters: period, band, score range, break type, suspicious, currency, country, account, dates, search, reviewed; sort; paging), `GET /transactions/{transaction_id}` |
+| Ingestion | `POST /ingestion/upload` (GL, FA, join map and MA files, or MA from its REST API), `GET /ingestion/batches`, `GET /ingestion/batches/{id}` |
+| Analytics | `GET /analytics/summary`, `/risk-distribution`, `/trends`, `/breakdown?by=currency\|country\|description\|period\|band\|break_type`, `/top-accounts` |
+| Models | `GET /models`, `GET /models/active`, `GET /models/{id}/evaluation`, `POST /models/{id}/activate`, `POST /models/sync` |
+| Reviews | `GET /reviews/queue`, `GET /reviews`, `POST /reviews`, `POST /reviews/{id}/approve`, `POST /reviews/{id}/reject`, `POST /reviews/bulk-approve` |
+| Reports | `GET /reports/export` (CSV, same filters as `/transactions`) |
+| Audit | `GET /audit` |
+
+Roles: **analyst** scores, uploads and records review decisions; **approver** approves or rejects them; **admin** can do both and manages users and models. Every change is written to the audit log with the request id.
+
+### How it behaves
+
+- **Scoring a transaction.** Send one system's record, and the other systems' records of the same transaction when you have them. A record for a TransactionID that is already stored is added to it and the whole transaction is re-linked and re-scored. Sending a system's record twice returns 409. Without a TransactionID, one is generated.
+- **Business rules are findings, not input errors.** Only structure is validated (a real date, a finite amount). An unsupported currency or a malformed account id is scored and reported as a rule violation, so it shows up in the queue instead of being refused.
+- **Join map.** A single transaction is resolved with its month's join map, or the latest earlier month's if its own is not loaded yet.
+- **Account history.** Behavioural features use the account's other stored transactions; a monthly load uses earlier months.
+- **Uploads** return at once with a queued batch that runs in the background. The batch records how MA arrived (file, API or CLI), rows per source, the outcome and the duration. A failed batch keeps nothing but its own row. Reloading a month updates transactions in place, keeps their score history and review outcomes, and replaces the month's join map. Pulling MA by URL only works for hosts listed in `MA_API_ALLOWED_HOSTS`.
+- **Review queue.** Transactions scoring 70 or more that have no pending or approved review, highest priority first. An analyst records "confirmed" or "false positive"; a different user with the approver role approves (the outcome is written on the transaction) or rejects it (it goes back to the queue).
+- **Models.** Artifacts in `MODEL_DIR` are registered at startup (or with `POST /models/sync`). Activating a version swaps it in without a restart, and every API worker follows the switch.
+- **Speed.** One transaction is scored in about 0.3 s, most of it pandas overhead on one-row frames. That is slower than the 100 ms the design aimed for and is a candidate for a fast path later.
+
 ## Tests
 
 ```bash
-make test   # pytest, positive and negative cases
+make test   # pytest for ml/ and backend/, positive and negative cases
 make lint   # ruff
 ```
+
+Backend tests run against a real PostgreSQL database, which they wipe: `TEST_DATABASE_URL` (default `postgresql+psycopg://fraud:fraud@localhost:5432/fraud_test`). They generate a small synthetic dataset and train a model on it, so no real data is needed.
 
 ## Repository layout
 
@@ -153,5 +200,9 @@ ml/fraudml/            ML package (ingest, canonical, labels, eda, features, mod
                        scoring, pipeline CLI)
 ml/artifacts/          saved models (git-ignored)
 ml/tests/              unit and CLI tests with synthetic fixtures
-data/                  raw / interim / processed data (git-ignored)
+backend/app/           FastAPI app: api/v1 routers, services, repositories, ORM models,
+                       schemas, model registry, fraudapi CLI
+backend/alembic/       database migrations
+backend/tests/         API tests against PostgreSQL
+data/                  raw / interim / processed data and uploads (git-ignored)
 ```

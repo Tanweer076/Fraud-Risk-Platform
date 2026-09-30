@@ -1,3 +1,5 @@
+import json
+
 import httpx
 import pytest
 
@@ -5,9 +7,8 @@ from fraudml.errors import IngestionError
 from fraudml.ingest.fa_csv import read_fa_csv
 from fraudml.ingest.gl_xml import read_gl_xml
 from fraudml.ingest.join_map import read_join_map
-from fraudml.ingest.ma_api import read_ma_api, read_ma_embedded
-
-from .conftest import write_month
+from fraudml.ingest.ma_api import read_ma_api, read_ma_embedded, read_ma_file
+from fraudml.testing import write_month
 
 
 def test_gl_fa_ma_read_into_canonical_schema(tmp_path):
@@ -103,3 +104,42 @@ def test_ma_api_error_status_raises():
     client = httpx.Client(base_url="http://ma", transport=httpx.MockTransport(handler))
     with pytest.raises(IngestionError, match="MA API returned 400"):
         read_ma_api("http://ma", client=client)
+
+
+MA_HEADER = "TransactionID,TransactionDate,Amount,Currency,Country,Description,ma_customer_key"
+MA_ROW = ["AAAAAAAAAAAAAAA1", "2026-07-03", "100.00", "USD", "US", "Vendor payment", "CUS-000001"]
+
+
+def test_read_ma_file_accepts_script_csv_and_json(tmp_path):
+    month = write_month(tmp_path)
+    from_script = read_ma_file(month / "ma_api_server_202607.py")
+
+    csv_path = tmp_path / "ma.csv"
+    csv_path.write_text(MA_HEADER + "\n" + ",".join(MA_ROW) + "\n")
+    record = dict(zip(MA_HEADER.split(","), MA_ROW, strict=True))
+    list_path, page_path = tmp_path / "ma_list.json", tmp_path / "ma_page.json"
+    list_path.write_text(json.dumps([record]))
+    page_path.write_text(json.dumps({"data": [record], "total_pages": 1}))
+
+    assert len(from_script) == 3
+    for path in (csv_path, list_path, page_path):
+        df = read_ma_file(path)
+        assert list(df.columns) == list(from_script.columns)
+        assert df.loc[0, "account_key"] == "CUS-000001"
+        assert df.loc[0, "amount"] == 100.0
+
+
+@pytest.mark.parametrize(
+    ("name", "content", "match"),
+    [
+        ("ma.xlsx", "x", "Unsupported MA file type"),
+        ("ma.json", '{"rows": []}', "must be a list"),
+        ("ma.json", "[]", "no transactions"),
+        ("ma.json", "{not json", "Cannot read MA file"),
+    ],
+)
+def test_read_ma_file_rejects_bad_files(tmp_path, name, content, match):
+    path = tmp_path / name
+    path.write_text(content)
+    with pytest.raises(IngestionError, match=match):
+        read_ma_file(path)

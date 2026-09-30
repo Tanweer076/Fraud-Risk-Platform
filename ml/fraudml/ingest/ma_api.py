@@ -2,11 +2,12 @@
 
 MA data is served by a paginated REST API (`GET /api/ma/transactions`). For offline runs and
 CI, `read_ma_embedded` decodes the compressed payload stored in the month's server script
-without executing it.
+without executing it. `read_ma_file` also accepts CSV or JSON exports of the API data.
 """
 
 import base64
 import io
+import json
 import re
 import zlib
 from pathlib import Path
@@ -71,4 +72,31 @@ def read_ma_embedded(path: str | Path) -> pd.DataFrame:
         raise IngestionError(f"Embedded MA payload in {path} is corrupt: {exc}") from exc
 
     raw = pd.read_csv(io.StringIO(csv_text), dtype=str, keep_default_na=False)
+    return to_canonical(raw, "ma")
+
+
+def read_ma_file(path: str | Path) -> pd.DataFrame:
+    """Read MA data from a server script (.py), a CSV export or a JSON export.
+
+    JSON may be a list of records or an API page ({"data": [...]}).
+    """
+    path = Path(path)
+    suffix = path.suffix.lower()
+    if suffix == ".py":
+        return read_ma_embedded(path)
+    try:
+        if suffix == ".csv":
+            raw = pd.read_csv(path, dtype=str, keep_default_na=False)
+        elif suffix == ".json":
+            body = json.loads(path.read_text(encoding="utf-8"))
+            rows = body.get("data") if isinstance(body, dict) else body
+            if not isinstance(rows, list):
+                raise IngestionError(f"MA JSON {path} must be a list or have a 'data' list")
+            raw = pd.DataFrame(rows).astype("string")
+        else:
+            raise IngestionError(f"Unsupported MA file type {suffix!r}; use .py, .csv or .json")
+    except (OSError, ValueError, pd.errors.ParserError) as exc:
+        raise IngestionError(f"Cannot read MA file {path}: {exc}") from exc
+    if raw.empty:
+        raise IngestionError(f"MA file {path} has no transactions")
     return to_canonical(raw, "ma")
