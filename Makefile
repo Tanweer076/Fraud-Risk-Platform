@@ -1,7 +1,7 @@
 DATASET ?= data/raw/OneRecon_DataSet
 OUT ?= data/processed
 
-.PHONY: install test lint label
+.PHONY: install test lint label eda
 
 install:
 	pip install -e "ml[dev]"
@@ -19,3 +19,6 @@ label:
 		--month-dir "$(DATASET)/Current Data/august" \
 		--rules "$(DATASET)/business_rules.txt" \
 		--out $(OUT)
+
+eda:
+	fraudml eda --processed $(OUT) --out ml/reports/eda_report.html
