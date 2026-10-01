@@ -9,6 +9,7 @@ import logging
 import re
 import shutil
 import time
+from collections import Counter
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
@@ -28,6 +29,7 @@ from sqlalchemy import delete, func, insert, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session, sessionmaker
 
+from app.core import metrics
 from app.core.config import Settings
 from app.core.errors import AppError, BadRequest, NotFound, Unavailable
 from app.ml.frames import transaction_values
@@ -184,6 +186,23 @@ def run_batch(
         batch.finished_at = datetime.now(UTC)
         db.commit()
         log.info("Ingestion batch %s %s in %d ms", batch_id, batch.status, batch.duration_ms or 0)
+        _record_metrics(db, batch)
+
+
+def _record_metrics(db: Session, batch: IngestionBatch) -> None:
+    metrics.BATCHES.labels(batch.status).inc()
+    metrics.BATCH_DURATION.observe((batch.duration_ms or 0) / 1000)
+    if batch.status != "succeeded":
+        return
+    scored = db.execute(
+        select(Transaction.risk_band, Transaction.risk_score).where(
+            Transaction.batch_id == batch.id,
+            Transaction.scored_at >= batch.started_at,
+            Transaction.risk_score.is_not(None),
+        )
+    ).all()
+    bands = Counter(band for band, _ in scored)
+    metrics.record_scores("batch", bands, [score for _, score in scored])
 
 
 def _describe(exc: Exception) -> str:

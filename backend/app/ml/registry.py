@@ -19,6 +19,7 @@ from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from app.core.errors import NotFound, Unavailable
+from app.core.metrics import set_active_model
 from app.models import ModelVersion
 
 log = logging.getLogger(__name__)
@@ -116,7 +117,8 @@ class ModelRegistry:
     def _load(self, version: ModelVersion) -> LoadedModel:
         loaded = LoadedModel(version.id, version.version, Scorer.load(version.artifact_path))
         with self._lock:
-            self._loaded = loaded
+            previous, self._loaded = self._loaded, loaded
+        set_active_model(loaded.version, previous.version if previous else None)
         log.info("Loaded model %s", version.version)
         return loaded
 

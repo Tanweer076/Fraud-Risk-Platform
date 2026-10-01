@@ -8,30 +8,21 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
-from fraudml.errors import IngestionError
-from fraudml.ingest.rules import parse_rules
+from fastapi.responses import JSONResponse, Response
 
 from app import __version__
 from app.api.v1 import api_router
+from app.core import metrics
 from app.core.config import Settings, get_settings
 from app.core.errors import AppError
 from app.core.logging import configure_logging, request_id_var
+from app.core.ratelimit import RateLimiter
+from app.core.rules import load_rules
 from app.db.session import make_engine, make_sessionmaker
 from app.ml.registry import ModelRegistry
 
 log = logging.getLogger("app")
 REQUEST_ID = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
-
-
-def load_rules(settings: Settings):
-    try:
-        rules = parse_rules(settings.rules_path)
-    except IngestionError as exc:
-        log.error("Business rules not loaded: %s", exc)
-        return None
-    log.info("Loaded %d business rules from %s", len(rules), settings.rules_path)
-    return rules
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -63,6 +54,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.sessionmaker = make_sessionmaker(engine)
     app.state.registry = ModelRegistry(settings.model_dir)
     app.state.rules = None
+    app.state.limiter = RateLimiter(settings)
 
     app.add_middleware(
         CORSMiddleware,
@@ -85,6 +77,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             response = JSONResponse(
                 {"detail": "Internal server error", "request_id": request_id}, status_code=500
             )
+        elapsed = time.perf_counter() - started
         response.headers["X-Request-ID"] = request_id
         log.info(
             "%s %s %s",
@@ -94,16 +87,32 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             extra={
                 "extra_fields": {
                     "status": response.status_code,
-                    "duration_ms": round((time.perf_counter() - started) * 1000, 1),
+                    "duration_ms": round(elapsed * 1000, 1),
                 }
             },
         )
+        # Label by route template (/transactions/{transaction_id}, within /api/v1), not the raw
+        # path, so the number of series stays small; a path that matched no route is "unmatched".
+        route = getattr(request.scope.get("route"), "path", "unmatched")
+        if route != "/metrics":
+            metrics.HTTP_REQUESTS.labels(request.method, route, response.status_code).inc()
+            metrics.HTTP_LATENCY.labels(request.method, route).observe(elapsed)
         request_id_var.reset(token)
         return response
 
     @app.exception_handler(AppError)
     async def app_error(request: Request, exc: AppError):
-        return JSONResponse({"detail": exc.detail}, status_code=exc.status_code)
+        return JSONResponse(
+            {"detail": exc.detail}, status_code=exc.status_code, headers=exc.headers
+        )
 
     app.include_router(api_router, prefix="/api/v1")
+
+    if settings.metrics_enabled:
+        # Outside /api, so the web proxy does not publish it; Prometheus scrapes the API directly.
+        @app.get("/metrics", include_in_schema=False)
+        def metrics_page():
+            body, content_type = metrics.render()
+            return Response(body, media_type=content_type)
+
     return app
