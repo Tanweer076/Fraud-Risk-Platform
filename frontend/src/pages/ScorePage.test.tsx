@@ -8,7 +8,7 @@ import { mockApi } from "../test/server";
 it("scores an example and shows the risk, the failed checks and the reasons", async () => {
   const api = mockApi({ "POST /api/v1/predictions": scoreResult }, { user: analyst });
   const user = userEvent.setup();
-  renderApp("/score", { user: analyst });
+  renderApp("/score");
 
   await user.selectOptions(
     await screen.findByLabelText("Fill with an example"),
@@ -40,7 +40,7 @@ it("scores an example and shows the risk, the failed checks and the reasons", as
 it("shows what is missing instead of sending an incomplete record", async () => {
   const api = mockApi({}, { user: analyst });
   const user = userEvent.setup();
-  renderApp("/score", { user: analyst });
+  renderApp("/score");
 
   await user.click(await screen.findByRole("button", { name: "Score transaction" }));
 
@@ -53,7 +53,7 @@ it("shows what is missing instead of sending an incomplete record", async () => 
 
 it("is not offered to approvers", async () => {
   mockApi({}, { user: approver });
-  renderApp("/score", { user: approver });
+  renderApp("/score");
   expect(await screen.findByText("You don't have access to this page")).toBeInTheDocument();
   expect(screen.queryByRole("link", { name: "Score transaction" })).not.toBeInTheDocument();
 });

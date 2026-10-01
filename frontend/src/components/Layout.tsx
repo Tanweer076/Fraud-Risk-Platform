@@ -128,7 +128,7 @@ export function Layout() {
               <ThemeButton />
               <button
                 type="button"
-                onClick={logout}
+                onClick={() => void logout()}
                 className="inline-flex h-8 items-center gap-1.5 rounded-md px-2 text-xs text-ink-2 hover:bg-subtle hover:text-ink"
               >
                 <Icon name="logout" size={16} />

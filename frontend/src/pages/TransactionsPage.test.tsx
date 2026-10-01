@@ -14,7 +14,7 @@ it("keeps filters in the URL and sends them to the API", async () => {
     { user: analyst },
   );
   const user = userEvent.setup();
-  const app = renderApp("/transactions?page=3", { user: analyst });
+  const app = renderApp("/transactions?page=3");
 
   const row = await screen.findByRole("link", { name: "7C1D2E3F4A5B6C7D" });
   expect(within(row.closest("tr")!).getByText("Amount mismatch")).toBeInTheDocument();
@@ -41,7 +41,7 @@ it("reads filters from a shared link", async () => {
     { "GET /api/v1/analytics/summary": summary, "GET /api/v1/transactions": page([]) },
     { user: analyst },
   );
-  renderApp("/transactions?period=202608&suspicious=true&reviewed=false", { user: analyst });
+  renderApp("/transactions?period=202608&suspicious=true&reviewed=false");
 
   expect(await screen.findByText("No transactions match these filters.")).toBeInTheDocument();
   expect(screen.getByLabelText("Breaks")).toHaveValue("true");

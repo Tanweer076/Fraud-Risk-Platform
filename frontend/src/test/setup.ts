@@ -26,6 +26,5 @@ if (!window.matchMedia) {
 
 afterEach(() => {
   cleanup();
-  sessionStorage.clear();
   localStorage.clear();
 });
