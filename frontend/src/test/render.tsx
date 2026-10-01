@@ -1,18 +1,10 @@
-/** Render the real app (routes, auth, React Query) at a URL, optionally signed in. */
+/** Render the real app (routes, auth, React Query) at a URL. */
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { MemoryRouter, useLocation, type Location } from "react-router";
-import type { User } from "../api/client";
 import { AppRoutes } from "../App";
 import { AuthProvider } from "../auth/AuthProvider";
-import { saveSession } from "../auth/storage";
-
-export const TEST_TOKEN = "test-token";
-
-export function signIn(user: User) {
-  saveSession({ token: TEST_TOKEN, user, expiresAt: Date.now() + 60 * 60 * 1000 });
-}
 
 function testQueryClient() {
   return new QueryClient({
@@ -25,8 +17,8 @@ export function renderWithClient(ui: ReactNode) {
   return render(<QueryClientProvider client={client}>{ui}</QueryClientProvider>);
 }
 
-export function renderApp(path: string, { user }: { user?: User } = {}) {
-  if (user) signIn(user);
+/** Render the whole app at `path`. Who is signed in comes from mockApi's `user`. */
+export function renderApp(path: string) {
   const current: { location: Location | null } = { location: null };
   function LocationProbe() {
     current.location = useLocation();

@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 import pandas as pd
 
@@ -125,3 +126,20 @@ def test_label_records_flags_a_system_with_no_records(tmp_path, rules_path):
     assert not labelled["brk_missing_in_gl"].any()
     assert not labelled["brk_amount_mismatch"].any()
     assert labelled["break_types"].map(lambda b: b == ["missing_in_ma"]).all()
+
+
+def test_cli_demo_data_writes_months_the_label_step_reads(tmp_path, capsys):
+    out = tmp_path / "demo"
+    assert main(["demo-data", "--out", str(out), "--rows", "50"]) == 0
+    written = json.loads(capsys.readouterr().out)
+    assert [Path(d).name for d in written["month_dirs"]] == ["202606", "202607", "202608"]
+    rules = Path(written["rules"])
+    assert rules.read_text().startswith("R01|")
+
+    month_dirs = [arg for d in written["month_dirs"] for arg in ("--month-dir", d)]
+    labelled = tmp_path / "labelled"
+    args = ["label", *month_dirs, "--rules", str(rules), "--out", str(labelled)]
+    assert main(args) == 0
+    assert len(list(labelled.glob("labelled_*.parquet"))) == 3
+
+    assert main(["demo-data", "--out", str(out)]) == 1  # never overwrites

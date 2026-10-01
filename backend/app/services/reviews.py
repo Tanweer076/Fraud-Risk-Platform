@@ -12,6 +12,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.core import metrics
 from app.core.errors import AppError, Conflict, Forbidden, NotFound
 from app.models import Review, Transaction, User
 from app.repositories import transactions as repo
@@ -106,6 +107,7 @@ def create(db: Session, data: ReviewCreate, analyst: User) -> Review:
         after={"transaction_id": tx.transaction_id, "decision": data.decision, "note": data.note},
     )
     db.commit()
+    metrics.REVIEW_FINDINGS.labels(data.decision).inc()
     db.refresh(review)
     return review
 
@@ -148,6 +150,7 @@ def _decide_one(db: Session, review_id: int, approver: User, status: str, note: 
     _check_can_decide(review, approver)
     _decide(db, review, approver, status, note)
     db.commit()
+    metrics.REVIEW_DECISIONS.labels(status, review.decision).inc()
     db.refresh(review)
     return review
 
@@ -164,6 +167,8 @@ def bulk_approve(
             skipped.append(SkippedReview(id=review_id, reason=exc.detail))
             continue
         _decide(db, review, approver, "approved", note)
-        approved.append(review_id)
+        approved.append((review_id, review.decision))
     db.commit()
-    return BulkApproveResult(approved=approved, skipped=skipped)
+    for _, decision in approved:
+        metrics.REVIEW_DECISIONS.labels("approved", decision).inc()
+    return BulkApproveResult(approved=[review_id for review_id, _ in approved], skipped=skipped)

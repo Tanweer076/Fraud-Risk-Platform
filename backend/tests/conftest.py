@@ -82,6 +82,11 @@ def settings(database_url, dataset, tmp_path_factory) -> Settings:
         upload_dir=tmp_path_factory.mktemp("uploads"),
         ma_api_allowed_hosts=["ma.example.com"],
         batch_max_items=5,
+        # Off here; tests/test_limits_and_metrics.py turns them on with small numbers.
+        rate_limit_login="",
+        rate_limit_login_account="",
+        rate_limit_scoring="",
+        rate_limit_upload="",
     )
 
 
@@ -153,6 +158,12 @@ def users(client, settings) -> dict:
 @pytest.fixture
 def auth(users, settings):
     return auth_headers(users, settings)
+
+
+@pytest.fixture
+def users_on(settings):
+    """users_on(client): the standard users, for a client a test made itself."""
+    return lambda client: create_users(client, settings)
 
 
 @pytest.fixture

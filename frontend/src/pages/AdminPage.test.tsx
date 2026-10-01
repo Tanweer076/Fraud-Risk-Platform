@@ -14,7 +14,7 @@ it("lets an admin change other users but not lock themselves out", async () => {
     { user: admin },
   );
   const user = userEvent.setup();
-  renderApp("/admin", { user: admin });
+  renderApp("/admin");
 
   const own = await screen.findByLabelText("Role for admin@example.com");
   expect(own).toBeDisabled();
@@ -30,7 +30,7 @@ it("lets an admin change other users but not lock themselves out", async () => {
 it("checks a new user's details before creating them", async () => {
   const api = mockApi({ "GET /api/v1/users": [admin] }, { user: admin });
   const user = userEvent.setup();
-  renderApp("/admin", { user: admin });
+  renderApp("/admin");
 
   await user.type(await screen.findByLabelText("Email"), "not-an-email");
   await user.type(screen.getByLabelText("Password"), "short");
@@ -61,7 +61,7 @@ it("shows approvers only the audit log, with filters in the URL", async () => {
     { user: approver },
   );
   const user = userEvent.setup();
-  const app = renderApp("/admin", { user: approver });
+  const app = renderApp("/admin");
 
   const action = await screen.findByRole("cell", { name: "Recorded a finding" });
   const row = within(action.closest("tr")!);

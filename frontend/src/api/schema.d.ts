@@ -34,6 +34,9 @@ export interface paths {
         /**
          * Ready
          * @description Readiness: the database answers, a model is loaded and the business rules are read.
+         *
+         *     A model activated or rules put in place after startup are picked up here, so a stack
+         *     seeded while running becomes ready without a restart.
          */
         get: operations["ready_api_v1_ready_get"];
         put?: never;
@@ -55,10 +58,40 @@ export interface paths {
         put?: never;
         /**
          * Login
-         * @description OAuth2 password flow: `username` is the user's email.
+         * @description OAuth2 password flow for API clients: `username` is the user's email. The token comes
+         *     back in the body; send it as `Authorization: Bearer <token>`.
          */
         post: operations["login_api_v1_auth_login_post"];
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/session": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Current Session
+         * @description Who is signed in, and when the session ends.
+         */
+        get: operations["current_session_api_v1_auth_session_get"];
+        put?: never;
+        /**
+         * Start Session
+         * @description Sign in for the dashboard. The token goes into an HttpOnly cookie that page scripts
+         *     cannot read, instead of the body. Needs the X-Requested-With header.
+         */
+        post: operations["start_session_api_v1_auth_session_post"];
+        /**
+         * End Session
+         * @description Sign out: the browser drops the session cookie. Needs the X-Requested-With header.
+         */
+        delete: operations["end_session_api_v1_auth_session_delete"];
         options?: never;
         head?: never;
         patch?: never;
@@ -151,7 +184,8 @@ export interface paths {
         put?: never;
         /**
          * Score Batch
-         * @description Score several transactions; each succeeds or fails on its own.
+         * @description Score several transactions; each succeeds or fails on its own. Each one counts
+         *     against the scoring rate limit.
          */
         post: operations["score_batch_api_v1_predictions_batch_post"];
         delete?: never;
@@ -744,6 +778,30 @@ export interface components {
              */
             client_secret?: string | null;
         };
+        /** Body_start_session_api_v1_auth_session_post */
+        Body_start_session_api_v1_auth_session_post: {
+            /** Grant Type */
+            grant_type?: string | null;
+            /** Username */
+            username: string;
+            /**
+             * Password
+             * Format: password
+             */
+            password: string;
+            /**
+             * Scope
+             * @default
+             */
+            scope?: string;
+            /** Client Id */
+            client_id?: string | null;
+            /**
+             * Client Secret
+             * Format: password
+             */
+            client_secret?: string | null;
+        };
         /** Body_upload_month_api_v1_ingestion_upload_post */
         Body_upload_month_api_v1_ingestion_upload_post: {
             /**
@@ -1190,6 +1248,15 @@ export interface components {
             /** In Systems */
             in_systems: ("gl" | "ma" | "fa")[];
         };
+        /** SessionOut */
+        SessionOut: {
+            user: components["schemas"]["UserOut"];
+            /**
+             * Expires At
+             * Format: date-time
+             */
+            expires_at: string;
+        };
         /** SkippedReview */
         SkippedReview: {
             /** Id */
@@ -1538,6 +1605,77 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
                 };
+            };
+        };
+    };
+    current_session_api_v1_auth_session_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionOut"];
+                };
+            };
+        };
+    };
+    start_session_api_v1_auth_session_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/x-www-form-urlencoded": components["schemas"]["Body_start_session_api_v1_auth_session_post"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    end_session_api_v1_auth_session_delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };

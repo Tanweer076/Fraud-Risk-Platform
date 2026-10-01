@@ -2,7 +2,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, BackgroundTasks, File, Form, Query, Request, UploadFile, status
 
-from app.api.deps import DB, AppSettings, CurrentUser, Maker, Registry, Rules
+from app.api.deps import DB, AppSettings, CurrentUser, Limiter, Maker, Registry, Rules
 from app.core.errors import BadRequest
 from app.schemas.common import Page
 from app.schemas.ingestion import BatchOut
@@ -20,6 +20,7 @@ def upload_month(
     registry: Registry,
     rules: Rules,
     user: Maker,
+    limiter: Limiter,
     period: Annotated[str, Form(pattern=ingestion.PERIOD_PATTERN, examples=["202608"])],
     gl: Annotated[UploadFile, File(description="GL report (.xml)")],
     fa: Annotated[UploadFile, File(description="FA report (.csv)")],
@@ -35,6 +36,7 @@ def upload_month(
 
     Returns at once with a queued batch; poll GET /ingestion/batches/{id} for the outcome.
     """
+    limiter.hit("upload", f"user:{user.id}")
     if (ma is None) == (ma_url is None):
         raise BadRequest("Send either an MA file or ma_url, not both or neither")
     uploads = {"gl": gl, "fa": fa, "join_map": join_map} | ({"ma": ma} if ma else {})

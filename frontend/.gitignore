@@ -2,3 +2,8 @@ node_modules
 dist
 coverage
 *.local
+# Playwright: results, reports and the signed-in states the e2e setup saves
+test-results/
+playwright-report/
+blob-report/
+e2e/.auth/

@@ -15,6 +15,7 @@ from fraudml.pipeline import label_records
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.core import metrics
 from app.core.config import Settings
 from app.core.errors import AppError, BadRequest, Conflict
 from app.ml.frames import canonical_frames, stored_record, transaction_values
@@ -111,13 +112,16 @@ def score_submission(
     except IntegrityError as exc:  # the same new TransactionID stored concurrently
         raise Conflict(f"Transaction {transaction_id} was stored by another request") from exc
 
+    elapsed = time.perf_counter() - started
     prediction = Prediction(
         transaction_pk=tx.id,
         **prediction_values(scored, model, source="api"),
-        latency_ms=round((time.perf_counter() - started) * 1000, 1),
+        latency_ms=round(elapsed * 1000, 1),
     )
     db.add(prediction)
     db.flush()
+    metrics.SCORING_LATENCY.observe(elapsed)
+    metrics.record_scores("api", {prediction.risk_band: 1}, [prediction.risk_score])
     audit.record(
         db,
         user,

@@ -20,7 +20,7 @@ it("lets an approver bulk-approve other people's findings but never their own", 
     { user: approver },
   );
   const user = userEvent.setup();
-  renderApp("/reviews?tab=pending", { user: approver });
+  renderApp("/reviews?tab=pending");
 
   const mine = await screen.findByRole("checkbox", { name: "Select review 12" });
   expect(mine).toBeDisabled();
@@ -45,7 +45,7 @@ it("lets an analyst record a finding from the queue", async () => {
     { user: analyst },
   );
   const user = userEvent.setup();
-  renderApp("/reviews", { user: analyst });
+  renderApp("/reviews");
 
   await user.click(await screen.findByRole("button", { name: "Review" }));
   await user.click(screen.getByRole("radio", { name: "Confirmed break" }));
@@ -62,7 +62,7 @@ it("lets an analyst record a finding from the queue", async () => {
 
 it("shows approvers the queue without the review button", async () => {
   mockApi({ "GET /api/v1/reviews/queue": page([transaction()]) }, { user: approver });
-  renderApp("/reviews", { user: approver });
+  renderApp("/reviews");
   expect(await screen.findByRole("link", { name: "7C1D2E3F4A5B6C7D" })).toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "Review" })).not.toBeInTheDocument();
 });

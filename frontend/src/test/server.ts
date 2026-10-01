@@ -49,14 +49,22 @@ async function toCall(input: RequestInfo | URL, init?: RequestInit): Promise<Cal
   };
 }
 
+/** The session the app finds on load: `user` signed in for an hour, or none (401). */
+export function sessionFor(user?: User): Response | object {
+  return user
+    ? { user, expires_at: new Date(Date.now() + 60 * 60 * 1000).toISOString() }
+    : status(401, { detail: "Not authenticated" });
+}
+
 /**
  * Routes are keyed "METHOD /path"; a value is the JSON to return, a Response, or a function of
- * the call returning either. `user` answers GET /auth/me. Unrouted calls get a 404 and are kept
- * in `unrouted`, so a test can assert none happened.
+ * the call returning either. `user` is who is signed in (GET /auth/session); without it the app
+ * starts signed out. Unrouted calls get a 404 and are kept in `unrouted`, so a test can assert
+ * none happened.
  */
 export function mockApi(routes: Record<string, Handler>, { user }: { user?: User } = {}) {
   const table: Record<string, Handler> = {
-    ...(user ? { "GET /api/v1/auth/me": user } : {}),
+    "GET /api/v1/auth/session": () => sessionFor(user),
     ...routes,
   };
   const calls: Call[] = [];

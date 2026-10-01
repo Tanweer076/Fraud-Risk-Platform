@@ -10,7 +10,7 @@ export type Band = "low" | "medium" | "high" | "critical";
 export type Role = Schemas["UserOut"]["role"];
 export type SystemCode = "gl" | "ma" | "fa";
 export type User = Schemas["UserOut"];
-export type Token = Schemas["Token"];
+export type SessionOut = Schemas["SessionOut"];
 export type TransactionSummary = Schemas["TransactionSummary"];
 export type TransactionDetail = Schemas["TransactionDetail"];
 export type SystemRecord = Schemas["SystemRecordOut"];
@@ -66,25 +66,27 @@ export function errorMessage(status: number, body: unknown): string {
   return `Request failed (${status})`;
 }
 
-let authToken: string | null = null;
+/**
+ * The session is an HttpOnly cookie the browser sends by itself; page scripts never see the token.
+ * The API only accepts a cookie-signed change with this header, which a form or page on another
+ * site cannot add, so it doubles as protection against cross-site request forgery.
+ */
+export const CSRF_HEADER = { name: "X-Requested-With", value: "fetch" } as const;
+
 let unauthorizedHandler: (() => void) | null = null;
 
-export function setAuthToken(token: string | null) {
-  authToken = token;
-}
-
-/** Called when the API rejects the saved token (expired or revoked). */
+/** Called when the API turns down the session (expired or revoked); set while signed in. */
 export function setUnauthorizedHandler(handler: (() => void) | null) {
   unauthorizedHandler = handler;
 }
 
-const auth: Middleware = {
+const session: Middleware = {
   onRequest({ request }) {
-    if (authToken) request.headers.set("Authorization", `Bearer ${authToken}`);
+    request.headers.set(CSRF_HEADER.name, CSRF_HEADER.value);
     return request;
   },
   onResponse({ response }) {
-    if (response.status === 401 && authToken) unauthorizedHandler?.();
+    if (response.status === 401) unauthorizedHandler?.();
     return response;
   },
 };
@@ -94,7 +96,7 @@ export const api = createClient<paths>({
   // Resolve fetch at call time, so tests can replace it.
   fetch: (request) => globalThis.fetch(request),
 });
-api.use(auth);
+api.use(session);
 
 /** The data of an openapi-fetch result, or an ApiError. */
 export async function unwrap<T>(
@@ -110,9 +112,9 @@ export async function unwrap<T>(
 /** fetch for the calls openapi-fetch doesn't fit (form login, file upload, file download). */
 export async function apiFetch(path: string, init: RequestInit = {}): Promise<Response> {
   const headers = new Headers(init.headers);
-  if (authToken) headers.set("Authorization", `Bearer ${authToken}`);
+  headers.set(CSRF_HEADER.name, CSRF_HEADER.value);
   const response = await globalThis.fetch(path, { ...init, headers });
-  if (response.status === 401 && authToken) unauthorizedHandler?.();
+  if (response.status === 401) unauthorizedHandler?.();
   if (!response.ok) {
     const body = await response.json().catch(() => null);
     throw new ApiError(response.status, errorMessage(response.status, body));

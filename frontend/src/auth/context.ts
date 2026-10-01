@@ -2,9 +2,8 @@ import { createContext, useContext } from "react";
 import type { Role, User } from "../api/client";
 
 export interface Session {
-  token: string;
   user: User;
-  /** Epoch milliseconds when the token stops working. */
+  /** Epoch milliseconds when the session (its cookie and token) ends. */
   expiresAt: number;
 }
 
@@ -13,7 +12,7 @@ export interface AuthValue {
   /** Why the user was signed out, for the login page ("expired"), if not by choice. */
   signedOutReason: "expired" | null;
   login: (email: string, password: string) => Promise<User>;
-  logout: () => void;
+  logout: () => Promise<void>;
 }
 
 export const AuthContext = createContext<AuthValue | null>(null);

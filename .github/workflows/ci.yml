@@ -5,6 +5,9 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   ml:
     runs-on: ubuntu-latest
@@ -84,3 +87,145 @@ jobs:
       - run: npm run format:check
       - run: npm test
       - run: npm run build
+
+  # The whole stack in Docker, with synthetic data, driven by a real browser.
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Make throwaway secrets for this run
+        run: |
+          for name in JWT_SECRET POSTGRES_PASSWORD ADMIN_PASSWORD; do
+            value=$(openssl rand -hex 32)
+            echo "::add-mask::$value"
+            echo "$name=$value" >> "$GITHUB_ENV"
+          done
+      - name: Build and start the stack
+        run: docker compose up --detach --build --wait --wait-timeout 300
+      - name: Load the demo data
+        run: docker compose run --rm demo
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install the test browser
+        working-directory: frontend
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+      - name: Browser tests
+        working-directory: frontend
+        run: npm run e2e
+      - name: Save the stack's logs
+        if: failure()
+        run: docker compose logs --no-color --timestamps > compose.log
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: e2e-report
+          path: |
+            frontend/playwright-report
+            frontend/test-results
+            compose.log
+          retention-days: 7
+      - name: Stop the stack
+        if: always()
+        run: docker compose down --volumes
+
+  # On main, once every check passes: publish both images to GitHub's container registry,
+  # tagged with the commit (sha-<7 characters>) and latest.
+  publish:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [ml, backend, frontend, e2e]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      matrix:
+        image: [api, web]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}-${{ matrix.image }}
+          tags: |
+            type=sha
+            type=raw,value=latest
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: infra/docker/${{ matrix.image }}.Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
+
+  # Runs once the production environment is set up (README, Deployment): the server pulls the
+  # images just published and restarts on them. Skipped while DEPLOY_HOST is unset.
+  deploy:
+    if: vars.DEPLOY_HOST != ''
+    needs: publish
+    runs-on: ubuntu-latest
+    environment: production
+    concurrency:
+      group: production
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      packages: read
+    env:
+      DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+      DEPLOY_USER: ${{ vars.DEPLOY_USER || 'deploy' }}
+      DEPLOY_PATH: ${{ vars.DEPLOY_PATH || '/opt/fraud-risk-platform' }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up SSH
+        env:
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          KNOWN_HOSTS: ${{ vars.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          printf 'Host target\n  HostName %s\n  User %s\n  IdentityFile ~/.ssh/id_deploy\n  BatchMode yes\n' \
+            "$DEPLOY_HOST" "$DEPLOY_USER" > ~/.ssh/config
+      - name: Copy the compose files and their configs
+        run: |
+          # shellcheck disable=SC2029  # the path is expanded here on purpose
+          tar czf - docker-compose.yml docker-compose.prod.yml infra/caddy infra/prometheus \
+            | ssh target "mkdir -p '$DEPLOY_PATH' && tar xzf - -C '$DEPLOY_PATH'"
+      - name: Pull the new images and restart
+        env:
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          repo="${GITHUB_REPOSITORY,,}"
+          tag="sha-${GITHUB_SHA::7}"
+          # The server signs in with this job's token, which expires when the job ends.
+          # shellcheck disable=SC2029
+          echo "$REGISTRY_TOKEN" | ssh target "docker login ghcr.io -u '$GITHUB_ACTOR' --password-stdin"
+          ssh target bash -s -- "$DEPLOY_PATH" "ghcr.io/$repo-api:$tag" "ghcr.io/$repo-web:$tag" <<'EOF'
+          set -euo pipefail
+          cd "$1"
+          trap 'docker logout ghcr.io >/dev/null' EXIT
+          if [ ! -f .env ]; then
+            echo "Create $1/.env first (README, Deployment)." >&2
+            exit 1
+          fi
+          # .env keeps the deployed version, so commands run on the server use the same images.
+          sed -i -e '/^API_IMAGE=/d' -e '/^WEB_IMAGE=/d' .env
+          printf 'API_IMAGE=%s\nWEB_IMAGE=%s\n' "$2" "$3" >> .env
+          compose() { docker compose -f docker-compose.yml -f docker-compose.prod.yml "$@"; }
+          compose pull --quiet
+          compose up --detach --wait --wait-timeout 300 --remove-orphans
+          EOF

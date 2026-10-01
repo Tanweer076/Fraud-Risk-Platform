@@ -2,7 +2,7 @@ DATASET ?= data/raw/OneRecon_DataSet
 OUT ?= data/processed
 
 .PHONY: install test test-ml test-backend test-web lint label eda train migrate seed api \
-	web-install web api-types
+	web-install web api-types docker-up docker-demo docker-seed docker-logs docker-down e2e
 
 install:
 	pip install -e "ml[dev]" -e "backend[dev]"
@@ -61,3 +61,28 @@ web:
 api-types:
 	cd backend && fraudapi openapi --output ../frontend/openapi.json
 	cd frontend && npm run gen:api
+
+# --- Docker: the whole app on http://localhost:8080 (see README, Run it with Docker) ---------
+
+docker-up:
+	docker compose up --detach --build --wait
+
+# Synthetic data, a model trained on it and the admin from .env: enough to try every page.
+docker-demo:
+	docker compose run --rm demo
+
+# The real dataset from DATASET_DIR instead.
+docker-seed:
+	docker compose run --rm seed
+
+docker-logs:
+	docker compose logs --follow --tail 100
+
+# Keeps the data; docker compose down --volumes deletes it too.
+docker-down:
+	docker compose down
+
+# Browser tests against the running stack, signed in as the admin from .env. The first time:
+# cd frontend && npx playwright install chromium
+e2e:
+	cd frontend && npm run e2e

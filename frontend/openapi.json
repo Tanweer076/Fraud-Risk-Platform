@@ -31,7 +31,7 @@
           "health"
         ],
         "summary": "Ready",
-        "description": "Readiness: the database answers, a model is loaded and the business rules are read.",
+        "description": "Readiness: the database answers, a model is loaded and the business rules are read.\n\nA model activated or rules put in place after startup are picked up here, so a stack\nseeded while running becomes ready without a restart.",
         "operationId": "ready_api_v1_ready_get",
         "responses": {
           "200": {
@@ -51,7 +51,7 @@
           "auth"
         ],
         "summary": "Login",
-        "description": "OAuth2 password flow: `username` is the user's email.",
+        "description": "OAuth2 password flow for API clients: `username` is the user's email. The token comes\nback in the body; send it as `Authorization: Bearer <token>`.",
         "operationId": "login_api_v1_auth_login_post",
         "requestBody": {
           "content": {
@@ -83,6 +83,86 @@
                 }
               }
             }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/session": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Current Session",
+        "description": "Who is signed in, and when the session ends.",
+        "operationId": "current_session_api_v1_auth_session_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionOut"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Start Session",
+        "description": "Sign in for the dashboard. The token goes into an HttpOnly cookie that page scripts\ncannot read, instead of the body. Needs the X-Requested-With header.",
+        "operationId": "start_session_api_v1_auth_session_post",
+        "requestBody": {
+          "content": {
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_start_session_api_v1_auth_session_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "End Session",
+        "description": "Sign out: the browser drops the session cookie. Needs the X-Requested-With header.",
+        "operationId": "end_session_api_v1_auth_session_delete",
+        "responses": {
+          "204": {
+            "description": "Successful Response"
           }
         }
       }
@@ -297,7 +377,7 @@
           "predictions"
         ],
         "summary": "Score Batch",
-        "description": "Score several transactions; each succeeds or fails on its own.",
+        "description": "Score several transactions; each succeeds or fails on its own. Each one counts\nagainst the scoring rate limit.",
         "operationId": "score_batch_api_v1_predictions_batch_post",
         "requestBody": {
           "content": {
@@ -2611,6 +2691,65 @@
         ],
         "title": "Body_login_api_v1_auth_login_post"
       },
+      "Body_start_session_api_v1_auth_session_post": {
+        "properties": {
+          "grant_type": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^password$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Grant Type"
+          },
+          "username": {
+            "type": "string",
+            "title": "Username"
+          },
+          "password": {
+            "type": "string",
+            "format": "password",
+            "title": "Password"
+          },
+          "scope": {
+            "type": "string",
+            "title": "Scope",
+            "default": ""
+          },
+          "client_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Client Id"
+          },
+          "client_secret": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "format": "password",
+            "title": "Client Secret"
+          }
+        },
+        "type": "object",
+        "required": [
+          "username",
+          "password"
+        ],
+        "title": "Body_start_session_api_v1_auth_session_post"
+      },
       "Body_upload_month_api_v1_ingestion_upload_post": {
         "properties": {
           "period": {
@@ -3739,6 +3878,24 @@
           "in_systems"
         ],
         "title": "ScoreResult"
+      },
+      "SessionOut": {
+        "properties": {
+          "user": {
+            "$ref": "#/components/schemas/UserOut"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Expires At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "user",
+          "expires_at"
+        ],
+        "title": "SessionOut"
       },
       "SkippedReview": {
         "properties": {

@@ -44,3 +44,8 @@ class UserUpdate(BaseModel):
     is_active: bool | None = None
 
     _password = field_validator("password")(_check_password)
+
+
+class SessionOut(BaseModel):
+    user: UserOut
+    expires_at: datetime

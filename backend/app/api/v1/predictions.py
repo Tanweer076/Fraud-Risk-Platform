@@ -1,7 +1,7 @@
 from fastapi import APIRouter, status
 from sqlalchemy import select
 
-from app.api.deps import DB, AppSettings, CurrentUser, Maker, Registry, Rules
+from app.api.deps import DB, AppSettings, CurrentUser, Limiter, Maker, Registry, Rules
 from app.core.errors import NotFound
 from app.models import Prediction
 from app.schemas.predictions import (
@@ -18,7 +18,7 @@ router = APIRouter(prefix="/predictions", tags=["predictions"])
 
 @router.post("", response_model=ScoreResult, status_code=status.HTTP_201_CREATED)
 def score_transaction(
-    req: PredictionRequest, db: DB, registry: Registry, rules: Rules, user: Maker
+    req: PredictionRequest, db: DB, registry: Registry, rules: Rules, user: Maker, limiter: Limiter
 ):
     """Score one transaction and store it with its risk assessment.
 
@@ -26,6 +26,7 @@ def score_transaction(
     known. Records for a TransactionID that is already stored are added to it (409 if that
     system's record is already there) and the transaction is re-scored.
     """
+    limiter.hit("scoring", f"user:{user.id}")
     return scoring.score_submission(db, registry, rules, req, user)
 
 
@@ -37,8 +38,11 @@ def score_batch(
     rules: Rules,
     settings: AppSettings,
     user: Maker,
+    limiter: Limiter,
 ):
-    """Score several transactions; each succeeds or fails on its own."""
+    """Score several transactions; each succeeds or fails on its own. Each one counts
+    against the scoring rate limit."""
+    limiter.hit("scoring", f"user:{user.id}", cost=len(body.transactions))
     return scoring.score_batch(db, registry, rules, settings, body.transactions, user)
 
 

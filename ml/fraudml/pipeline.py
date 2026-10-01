@@ -104,6 +104,22 @@ def run_train(processed: Path, out: Path, test_period: str | None) -> int:
     return 0
 
 
+def run_demo_data(out: Path, rows: int, seed: int) -> int:
+    """Write synthetic months laid out like the real dataset, for demos and end-to-end tests."""
+    from fraudml.testing import RULES, make_dataset
+
+    if (out / "raw").exists():
+        log.error("%s already exists; pass a new --out folder or delete it first", out / "raw")
+        return 1
+    out.mkdir(parents=True, exist_ok=True)
+    rules = out / "business_rules.txt"
+    rules.write_text(RULES)
+    make_dataset(out, rules, n=rows, seed=seed)
+    months = sorted(str(p) for p in (out / "raw").iterdir())
+    print(json.dumps({"rules": str(rules), "month_dirs": months}, indent=2))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="fraudml")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -120,6 +136,12 @@ def main(argv: list[str] | None = None) -> int:
     trn.add_argument("--processed", type=Path, default=Path("data/processed"))
     trn.add_argument("--out", type=Path, default=Path("ml/artifacts"))
     trn.add_argument("--test-period", help="YYYYMM held out as the test month (default: latest)")
+    demo = sub.add_parser(
+        "demo-data", help="Write three synthetic months and rules (no real data needed)"
+    )
+    demo.add_argument("--out", type=Path, required=True)
+    demo.add_argument("--rows", type=int, default=2000, help="Transactions per month")
+    demo.add_argument("--seed", type=int, default=7)
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -127,6 +149,8 @@ def main(argv: list[str] | None = None) -> int:
         return run_eda(args.processed, args.out)
     if args.command == "train":
         return run_train(args.processed, args.out, args.test_period)
+    if args.command == "demo-data":
+        return run_demo_data(args.out, args.rows, args.seed)
     if args.ma_source == "api" and len(args.month_dir) > 1:
         parser.error("--ma-source api serves one month at a time; pass a single --month-dir")
 

@@ -10,7 +10,7 @@ const file = (name: string) => new File(["data"], name);
 it("checks the form before uploading", async () => {
   const api = mockApi({ "GET /api/v1/ingestion/batches": page([batch()]) }, { user: analyst });
   const user = userEvent.setup();
-  renderApp("/ingestion", { user: analyst });
+  renderApp("/ingestion");
 
   await user.click(await screen.findByRole("button", { name: "Upload and load" }));
 
@@ -36,7 +36,7 @@ it("uploads a month and shows it queued", async () => {
     { user: analyst },
   );
   const user = userEvent.setup();
-  renderApp("/ingestion", { user: analyst });
+  renderApp("/ingestion");
 
   await user.type(await screen.findByLabelText("Month"), "202609");
   await user.upload(screen.getByLabelText("GL report"), file("GL_202609.xml"));
@@ -72,7 +72,7 @@ it("shows the load history, with failures, to everyone but the form only to make
     },
     { user: approver },
   );
-  renderApp("/ingestion", { user: approver });
+  renderApp("/ingestion");
 
   expect(await screen.findByText("The gl file must be one of: .xml")).toBeInTheDocument();
   expect(screen.getByText("Failed")).toBeInTheDocument();

@@ -1,0 +1,124 @@
+# The whole app on one machine: PostgreSQL, the API and the dashboard on http://localhost:8080.
+#
+#   cp .env.example .env         # set JWT_SECRET, POSTGRES_PASSWORD and ADMIN_PASSWORD
+#   docker compose up -d --build
+#   make docker-demo             # synthetic data; or make docker-seed for the real dataset
+#
+# docker-compose.prod.yml adds HTTPS and uses published images; see README, Deployment.
+name: fraud-risk-platform
+
+x-api: &api
+  image: ${API_IMAGE:-fraud-risk-api:local}
+  build:
+    context: .
+    dockerfile: infra/docker/api.Dockerfile
+  environment: &api-env
+    DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-fraud}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/${POSTGRES_DB:-fraud}
+    JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env (32 characters or more)}
+    JWT_EXPIRE_MINUTES: ${JWT_EXPIRE_MINUTES:-60}
+    # Plain HTTP on localhost; docker-compose.prod.yml turns secure cookies back on for HTTPS.
+    COOKIE_SECURE: ${COOKIE_SECURE:-false}
+    MA_API_ALLOWED_HOSTS: ${MA_API_ALLOWED_HOSTS:-}
+    LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    WEB_CONCURRENCY: ${WEB_CONCURRENCY:-2}
+    # Taken from .env when set there (empty turns a limit off); otherwise the API's defaults.
+    RATE_LIMIT_LOGIN:
+    RATE_LIMIT_LOGIN_ACCOUNT:
+    RATE_LIMIT_SCORING:
+    RATE_LIMIT_UPLOAD:
+  volumes:
+    - data:/data
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-fraud}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-fraud}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  # The release step: schema migrations and model registration, before the API starts.
+  migrate:
+    <<: *api
+    command: ["migrate"]
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    <<: *api
+    command: ["serve"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    # Not published: the web proxy forwards /api, and Prometheus scrapes it on this network.
+
+  web:
+    image: ${WEB_IMAGE:-fraud-risk-web:local}
+    build:
+      context: .
+      dockerfile: infra/docker/web.Dockerfile
+    ports:
+      - "${WEB_PORT:-8080}:8080"
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # One-off jobs: docker compose run --rm seed (the real dataset) or demo (synthetic data).
+  seed:
+    <<: *api
+    profiles: ["tools"]
+    entrypoint: ["seed", "real"]
+    environment:
+      <<: *api-env
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@example.com}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+    volumes:
+      - data:/data
+      - ${DATASET_DIR:-./data/raw/OneRecon_DataSet}:/dataset:ro
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: "no"
+
+  demo:
+    <<: *api
+    profiles: ["tools"]
+    entrypoint: ["seed", "demo"]
+    environment:
+      <<: *api-env
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@example.com}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+      DEMO_ROWS: ${DEMO_ROWS:-2000}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: "no"
+
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    profiles: ["monitoring"]
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus:/prometheus
+    ports:
+      - "127.0.0.1:9090:9090"
+    depends_on:
+      - api
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  data:
+  prometheus:
