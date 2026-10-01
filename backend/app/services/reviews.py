@@ -37,6 +37,8 @@ def queue_query(min_score: int):
         .order_by(
             Transaction.priority.desc().nulls_last(),
             Transaction.risk_score.desc(),
+            # Priority tops out at 100, so among those the most money at stake comes first.
+            Transaction.exposure_usd.desc().nulls_last(),
             Transaction.id,
         )
     )

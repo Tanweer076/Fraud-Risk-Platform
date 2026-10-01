@@ -1,12 +1,14 @@
-"""Command line tasks: create users, load months of data, register models.
+"""Command line tasks: create users, load months of data, register models, export the API schema.
 
 fraudapi create-user --email admin@example.com --role admin
 fraudapi ingest --month-dir "data/raw/OneRecon_DataSet/Historical Data/june" ...
 fraudapi sync-models
+fraudapi openapi --output ../frontend/openapi.json
 """
 
 import argparse
 import getpass
+import json
 import logging
 import os
 import sys
@@ -16,7 +18,7 @@ from fraudml.errors import IngestionError
 from fraudml.ingest.rules import parse_rules
 from pydantic import ValidationError
 
-from app.core.config import get_settings
+from app.core.config import Settings, get_settings
 from app.core.errors import AppError
 from app.core.logging import configure_logging
 from app.db.session import make_engine, make_sessionmaker
@@ -87,6 +89,19 @@ def _sync_models(args, settings, make_session) -> int:
     return 0 if registry.loaded_version else 1
 
 
+def _openapi(args) -> int:
+    """Write the OpenAPI schema the frontend's types are generated from. Needs no database."""
+    from app.main import create_app  # imported here: the other commands don't need the app
+
+    settings = Settings(_env_file=None, jwt_secret="0" * 32, log_level="WARNING")
+    schema = json.dumps(create_app(settings).openapi(), indent=2, ensure_ascii=False) + "\n"
+    if args.output:
+        Path(args.output).write_text(schema, encoding="utf-8")
+    else:
+        sys.stdout.write(schema)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="fraudapi")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -106,7 +121,12 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("sync-models", help="Register artifacts in MODEL_DIR and load the active")
     p.set_defaults(handler=_sync_models)
 
+    p = sub.add_parser("openapi", help="Print the OpenAPI schema (no database needed)")
+    p.add_argument("--output", type=Path, help="Write to this file instead of stdout")
+
     args = parser.parse_args(argv)
+    if args.command == "openapi":
+        return _openapi(args)
     settings = get_settings()
     configure_logging(settings.log_level)
     engine = make_engine(settings.database_url)
