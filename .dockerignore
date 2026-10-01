@@ -1,0 +1,23 @@
+# Only code goes into the images: never data, models, secrets or local builds.
+.git
+.github
+.env
+.env.*
+!.env.example
+data
+docs
+mlruns
+**/__pycache__
+**/*.egg-info
+**/.pytest_cache
+**/.ruff_cache
+ml/artifacts
+ml/reports
+ml/notebooks
+ml/tests
+backend/tests
+frontend/node_modules
+frontend/dist
+frontend/e2e
+frontend/test-results
+frontend/playwright-report

@@ -1,0 +1,61 @@
+# Production on one Linux server, added on top of docker-compose.yml:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml pull
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+#
+# Images come from the registry CI publishes to (API_IMAGE, WEB_IMAGE), Caddy serves HTTPS for
+# DOMAIN with a Let's Encrypt certificate, and only ports 80 and 443 are open.
+x-prod-api-env: &prod-api-env
+  COOKIE_SECURE: "true"
+  CORS_ORIGINS: https://${DOMAIN:?Set DOMAIN}
+
+services:
+  migrate:
+    image: ${API_IMAGE:?Set API_IMAGE, e.g. ghcr.io/<owner>/fraud-risk-platform-api:latest}
+    build: !reset null
+    environment: *prod-api-env
+
+  api:
+    image: ${API_IMAGE}
+    build: !reset null
+    environment: *prod-api-env
+    restart: always
+
+  web:
+    image: ${WEB_IMAGE:?Set WEB_IMAGE, e.g. ghcr.io/<owner>/fraud-risk-platform-web:latest}
+    build: !reset null
+    ports: !reset []
+    restart: always
+
+  seed:
+    image: ${API_IMAGE}
+    build: !reset null
+    environment: *prod-api-env
+
+  demo:
+    image: ${API_IMAGE}
+    build: !reset null
+    environment: *prod-api-env
+
+  caddy:
+    image: caddy:2.10-alpine
+    environment:
+      DOMAIN: ${DOMAIN}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./infra/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - web
+    restart: always
+
+  db:
+    restart: always
+
+volumes:
+  caddy_data:
+  caddy_config:

@@ -1,0 +1,6 @@
+# HTTPS for the whole app, with certificates from Let's Encrypt. DOMAIN must point at this server.
+{$DOMAIN} {
+	encode zstd gzip
+	header Strict-Transport-Security "max-age=31536000; includeSubDomains"
+	reverse_proxy web:8080
+}
