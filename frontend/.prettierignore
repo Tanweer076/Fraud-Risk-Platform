@@ -4,3 +4,7 @@ coverage
 openapi.json
 package-lock.json
 src/api/schema.d.ts
+test-results
+playwright-report
+blob-report
+e2e/.auth
