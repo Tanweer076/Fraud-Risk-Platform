@@ -63,11 +63,11 @@ The pipeline is written so the label definition is a pluggable module: if a labe
 ```
 fraud-risk-platform/
 ├── README.md                       # setup, run, architecture, assumptions
-├── docker-compose.yml              # postgres, api, web, (redis, worker)
-├── docker-compose.prod.yml
+├── docker-compose.yml              # db, migrate, api, web; seed and demo jobs; prometheus
+├── docker-compose.prod.yml         # one server: published images, Caddy for HTTPS
 ├── .env.example                    # no secrets committed
-├── Makefile                        # make train / test / up / migrate
-├── .github/workflows/ci.yml
+├── Makefile                        # make train / test / docker-up / docker-demo / e2e
+├── .github/workflows/ci.yml        # checks, browser tests, image publishing, deploy
 │
 ├── data/                           # git-ignored
 │   ├── raw/{202606,202607,202608}/ # untouched source files
@@ -114,6 +114,7 @@ fraud-risk-platform/
 ├── frontend/                       # React dashboard (Vite, TypeScript)
 │   ├── package.json  package-lock.json  vite.config.ts
 │   ├── openapi.json                # the API schema, written by `fraudapi openapi`
+│   ├── e2e/                        # Playwright browser tests against the Docker stack
 │   └── src/
 │       ├── api/                    # client.ts (openapi-fetch), queries.ts (React Query
 │       │                           # hooks), schema.d.ts (generated from openapi.json)
@@ -127,9 +128,10 @@ fraud-risk-platform/
 │                                   # (tests sit next to the code they test)
 │
 └── infra/
-    ├── nginx/nginx.conf
-    ├── docker/{api,web,worker}.Dockerfile
-    └── terraform/ (optional, cloud)
+    ├── docker/                     # api.Dockerfile, web.Dockerfile, entrypoint, seed job
+    ├── nginx/                      # dashboard + /api proxy, security headers
+    ├── caddy/Caddyfile             # HTTPS in production
+    └── prometheus/prometheus.yml
 ```
 
 The ML code lives in its own package (`fraudml`) and the backend imports it, so the **exact same feature code runs in training and in serving**. This is the single most important guard against training/serving skew.
@@ -363,25 +365,22 @@ Every chart has a table view with the same numbers, risk bands always carry an i
 
 ```mermaid
 flowchart LR
-  U[Browser] --> N[Nginx / reverse proxy + TLS]
-  N -->|/| W[web: React static build]
-  N -->|/api| A[api: FastAPI + Uvicorn/Gunicorn x N]
-  A --> P[(PostgreSQL 16)]
-  A --> O[(Model artifacts: volume or S3)]
-  A --> Q[(Redis)]
-  Q --> K[worker: Celery batch ingest/score/train]
-  K --> P
-  K --> O
-  A --> M[Prometheus / Grafana, logs]
+  U[Browser] -->|HTTPS| C[caddy: TLS certificate, HSTS]
+  C --> N[web: nginx, dashboard build, CSP]
+  N -->|/api| A[api: FastAPI, uvicorn x 2]
+  A --> P[(db: PostgreSQL 16)]
+  A --> D[(data volume: models, uploads, rules)]
+  R[migrate: Alembic, model sync] --> P
+  M[Prometheus, optional] -->|/metrics| A
 ```
 
-- **Local and demo:** `docker compose up` brings up postgres, api, web (nginx serving the build) and optionally redis + worker. `make seed` ingests the three months and trains the first model.
-- **CI (GitHub Actions):** lint (ruff, eslint), type check (mypy, tsc), tests (pytest with a Postgres service, vitest), a model smoke test (train on a sample and assert PR-AUC > baseline), then build and push images.
-- **CD:** the simple path is Render or Railway (managed Postgres + two services). The cloud path is AWS ECS Fargate (api, worker) + RDS Postgres + S3 (artifacts, uploads) + CloudFront/S3 (web) + Secrets Manager.
-- **Migrations:** Alembic runs as a release step before new API containers start.
+- **Local and demo:** `make docker-up` builds and starts `db`, `migrate`, `api` and `web`; `make docker-demo` (synthetic data) or `make docker-seed` (the real dataset) loads three months, trains the first model and creates the admin.
+- **CI (GitHub Actions):** ruff, tsc, eslint and prettier; pytest against a PostgreSQL service, with the migrations applied, checked against the models and reverted; Vitest; a check that the OpenAPI schema and the frontend's types are current; then the whole stack built in Docker and driven by Playwright on synthetic data. On `main`, the API and web images are published to GitHub's container registry, tagged by commit.
+- **CD:** one Linux server with Docker Compose. A deploy job copies the compose files over SSH, the server pulls the images for the commit with a token that expires with the job, and the stack restarts; Caddy obtains and renews the certificate. The images are configured only through environment variables, so Render, Railway or AWS ECS can run them as well.
+- **Migrations:** the `migrate` service runs Alembic and registers saved models; the API starts only after it succeeds, on every release.
 - **Model rollout:** a new version is registered as inactive, its evaluation is reviewed on the Models page, then it is activated. The API hot-reloads it, and the previous version stays available for rollback.
-- **Monitoring:** request latency and error rates, score distribution per day, feature drift (PSI against training), and the rate of confirmed vs false-positive reviews, which is the live precision signal.
-- **Security:** HTTPS only, JWT with short expiry, least-privilege DB user, secrets from env or a secrets manager, and account IDs masked in the UI for demos (a PDF guardrail).
+- **Monitoring:** Prometheus metrics at `/metrics`: request rate, latency and status by route; scores by band and source with a score histogram for drift; month loads; review outcomes, which are the live precision signal; rate-limited requests; the active model. `/ready` reports whether the database, model and rules are available.
+- **Security:** HTTPS with HSTS; the session token in an HttpOnly, SameSite=Strict, Secure cookie, with a header check against cross-site writes; JWTs that expire after 60 minutes; a strict Content-Security-Policy; sign-in limits per IP and per account; containers that run as non-root users; secrets only in the server's `.env` and the GitHub environment.
 
 ---
 
@@ -402,9 +401,9 @@ flowchart LR
 | Jobs | Celery + Redis (after MVP) | |
 | Auth | PyJWT, bcrypt | both maintained; python-jose and passlib are not |
 | Frontend | React 19 + Vite, React Router, TanStack Query, Tailwind CSS 4 with hand-written components, Recharts, react-hook-form + zod, openapi-fetch with types from openapi-typescript | a renamed API field fails the type check |
-| Testing | pytest with a real PostgreSQL, FastAPI TestClient, Vitest, React Testing Library against a fake API, Playwright (e2e, planned) | |
+| Testing | pytest with a real PostgreSQL, FastAPI TestClient, Vitest, React Testing Library against a fake API, Playwright against the Docker stack | |
 | Quality | ruff, black, mypy, eslint, prettier, pre-commit | |
-| Ops | Docker, docker compose, Nginx, GitHub Actions, Prometheus/Grafana | |
+| Ops | Docker, docker compose, nginx, Caddy, GitHub Actions with GHCR, Prometheus, limits (rate limiting) | |
 
 All dependency versions are pinned (`uv` or `poetry` lock files for Python, `package-lock.json` for the frontend), in line with the PDF's engineering checklist.
 
@@ -419,7 +418,7 @@ Each step ships as its own pull request.
 3. Features, model comparison, calibration, explanations, saved artifact (done)
 4. Postgres schema + Alembic, scoring, ingestion, analytics, review and model endpoints (done)
 5. React pages: Score → Transactions → Dashboard/Analytics → Models → Reviews → Ingestion → Admin (done)
-6. Docker compose, CI/CD, deployment target, rate limiting and metrics
+6. Docker compose, CI/CD, deployment target, rate limiting and metrics (done)
 
 ## 12. Assumptions and decisions
 - **Label definition (confirmed by Tanweer, 2026-09-30):** cross-system breaks from section 0 are the target for the fraud risk score.
@@ -447,3 +446,16 @@ What the dashboard build changed, and what it left for later:
 - **Review order:** priority tops out at 100, so ties are now broken by risk score and then by USD exposure, in the queue, the transaction list and the CSV export.
 - **Admin:** band thresholds and rule floors are part of the saved model, so they are shown read-only on the Models page rather than edited in Admin.
 - **Not built:** a per-month band chart, masked account IDs for demos, and Playwright end-to-end tests (step 6).
+
+### Step 6 changes to this design
+
+What the deployment build changed, and what it left for later:
+
+- **Hosting:** one Linux server running Docker Compose, with Caddy for HTTPS, rather than a managed platform. It needs nothing beyond Docker on the server, and the same images can move to Render or ECS later.
+- **No Redis, Celery or worker:** month loads stay background tasks in the API process (step 4), and rate limits are counted per process, so with two workers a client can get up to twice a limit. A shared store such as Redis would make them exact; it is the first thing to add if traffic grows.
+- **Proxies:** the official nginx image, run as an unprivileged user on port 8080, serves the dashboard and forwards `/api`. It trusts `X-Forwarded-For` only from private addresses, and Caddy replaces whatever a client sends, so the per-IP sign-in limit counts the real client. `/metrics` is not forwarded, so it is not public.
+- **Release step:** a `migrate` service that the API waits for, instead of migrating inside each worker at startup.
+- **Readiness without a restart:** the business rules and the model load on first use, so the API is ready as soon as data has been seeded.
+- **Session:** the HttpOnly cookie that step 5 left for deployment. Cookie-authenticated writes need an `X-Requested-With` header, and bearer tokens still work for API clients.
+- **Images:** Python dependencies sit in their own layer, so a code release adds a few megabytes; the API image is about 1.2 GB because of pandas, scikit-learn and LightGBM.
+- **Not built:** Grafana dashboards, feature drift (PSI), token revocation (signing out deletes the cookie, but a copied token stays valid until it expires unless its user is deactivated), a least-privilege database user and a slimmer API image.

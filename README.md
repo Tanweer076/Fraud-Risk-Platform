@@ -13,7 +13,7 @@ The data comes from three financial systems that record the same transactions: G
 | 3. Features, models, risk score, explanations | done |
 | 4. PostgreSQL + FastAPI | done |
 | 5. React dashboard | done |
-| 6. Docker, CI/CD, deployment | next (CI already checks ml, backend and frontend) |
+| 6. Docker, CI/CD, deployment | done |
 
 ## Setup
 
@@ -159,9 +159,9 @@ make api                          # http://localhost:8000/docs
 
 | Area | Endpoints |
 |---|---|
-| Auth | `POST /auth/login` (OAuth2 password form, email as username), `GET /auth/me` |
+| Auth | `POST /auth/session`, `GET /auth/session`, `DELETE /auth/session` (the dashboard's cookie sign-in, check and sign-out), `POST /auth/login` (OAuth2 password form for API clients, email as username; returns a bearer token), `GET /auth/me` |
 | Users (admin) | `GET /users`, `POST /users`, `PATCH /users/{id}` |
-| Health | `GET /health` (liveness), `GET /ready` (database, model and rules loaded) |
+| Health | `GET /health` (liveness), `GET /ready` (database, model and rules loaded); `GET /metrics` (Prometheus, at the API's root, not under `/api/v1`) |
 | Scoring | `POST /predictions`, `POST /predictions/batch`, `GET /predictions/{id}` |
 | Transactions | `GET /transactions` (filters: period, band, score range, break type, suspicious, currency, country, account, dates, search, reviewed; sort; paging), `GET /transactions/{transaction_id}` |
 | Ingestion | `POST /ingestion/upload` (GL, FA, join map and MA files, or MA from its REST API), `GET /ingestion/batches`, `GET /ingestion/batches/{id}` |
@@ -182,6 +182,8 @@ Roles: **analyst** scores, uploads and records review decisions; **approver** ap
 - **Uploads** return at once with a queued batch that runs in the background. The batch records how MA arrived (file, API or CLI), rows per source, the outcome and the duration. A failed batch keeps nothing but its own row. Reloading a month updates transactions in place, keeps their score history and review outcomes, and replaces the month's join map. Pulling MA by URL only works for hosts listed in `MA_API_ALLOWED_HOSTS`.
 - **Review queue.** Transactions scoring 70 or more that have no pending or approved review, highest priority first; priority tops out at 100, so ties go to the higher risk score and then the larger USD exposure. The transaction list and CSV export use the same order by default. An analyst records "confirmed" or "false positive"; a different user with the approver role approves (the outcome is written on the transaction) or rejects it (it goes back to the queue).
 - **Models.** Artifacts in `MODEL_DIR` are registered at startup (or with `POST /models/sync`). Activating a version swaps it in without a restart, and every API worker follows the switch.
+- **Sessions.** The dashboard signs in with `POST /auth/session`, which puts the token in an HttpOnly, SameSite=Strict cookie (Secure unless `COOKIE_SECURE=false`) that page scripts cannot read. Writes made with the cookie must send an `X-Requested-With` header, which a form on another site cannot add. API clients use `POST /auth/login` and send the token as a bearer header instead. A deactivated user is refused at their next request.
+- **Rate limits.** Sign-in: 10 attempts a minute per client IP and 5 per email. Scoring: 120 transactions a minute per user, a batch counting each of its transactions. Uploads: 20 months an hour per user. Over a limit the API answers 429 with `Retry-After`. Each API process keeps its own counts, so with two workers a client can get up to twice a limit; `RATE_LIMIT_*` in `.env` changes them, and an empty value turns one off.
 - **Speed.** One transaction is scored in about 0.3 s, most of it pandas overhead on one-row frames. That is slower than the 100 ms the design aimed for and is a candidate for a fast path later.
 
 ## Dashboard (React)
@@ -216,19 +218,82 @@ What people see follows their role: analysts score, load data and record finding
 
 - **Filters live in the URL**, so a filtered view can be bookmarked or sent to someone. The CSV export uses the same filters.
 - **Charts have a table view** with the same numbers. Risk bands always show an icon and a label with their colour, and the theme follows the system unless the user picks light or dark.
-- **Sessions** last until the token expires or the tab is closed; a rejected token signs the user out with a message.
+- **Sessions** use the API's HttpOnly cookie, so no token is kept where a script could read it. A session lasts across reloads and tabs until sign-out or the token's expiry (`JWT_EXPIRE_MINUTES`, 60 by default); when the API rejects it, the user is signed out with a message.
 - **Types come from the API.** After changing the API, run `make api-types` to refresh `frontend/openapi.json` and the generated types; CI fails if they are stale.
+
+## Run it with Docker
+
+The whole app in containers: PostgreSQL, the API (two worker processes) and the dashboard behind nginx, on http://localhost:8080. Needs Docker with Compose 2.24 or later.
+
+```bash
+cp .env.example .env    # set JWT_SECRET, POSTGRES_PASSWORD and ADMIN_PASSWORD
+make docker-up          # builds the images and waits until every container is healthy
+make docker-demo        # synthetic data and a model; or make docker-seed for the real dataset
+```
+
+Then sign in as `ADMIN_EMAIL` with `ADMIN_PASSWORD`. `make docker-logs` follows the logs; `make docker-down` stops the stack and keeps the data (`docker compose down --volumes` deletes it).
+
+- **Containers.** `db` is PostgreSQL 16. `migrate` applies the Alembic migrations and registers saved models, then exits; the API starts only after it succeeds, on every release. `api` is not published: only nginx in `web` reaches it, and nginx serves the dashboard and forwards `/api`. `seed` and `demo` are one-off jobs.
+- **Data.** The `pgdata` volume holds the database, and `data` holds models, uploads and the business rules. The images contain code only: no data, models or secrets.
+- **`make docker-demo`** generates three synthetic months (2,000 transactions each; `DEMO_ROWS` changes that), labels them, trains a model, loads and scores the months and creates the admin, in about 30 seconds. **`make docker-seed`** does the same with the real dataset, mounted read-only from `DATASET_DIR`. Running either again reloads the months in place and saves a new model version, which an admin activates on the Models page.
+
+## Deployment
+
+Production is one Linux server running the same compose file with `docker-compose.prod.yml` on top: Caddy serves HTTPS with a Let's Encrypt certificate, only ports 80 and 443 are open, cookies are Secure, and the images come from GitHub's container registry.
+
+### What CI does
+
+On every pull request, CI checks `ml/`, `backend/` and `frontend/`, then builds the whole stack in Docker, loads synthetic data and runs the browser tests. On `main`, once all of that passes, it publishes `ghcr.io/<owner>/fraud-risk-platform-api` and `-web`, tagged `sha-<commit>` and `latest`. When the server is set up, it then deploys them.
+
+### Set up the server (once)
+
+1. Get a Linux server with Docker Engine and the Compose plugin (2.24 or later), ports 80 and 443 open, and a DNS name pointing at it.
+2. Add a user for deployments, and give CI an SSH key for it:
+   ```bash
+   sudo useradd --create-home --groups docker deploy
+   sudo install -d -o deploy -g deploy /opt/fraud-risk-platform
+   # put the public half of a new key pair in /home/deploy/.ssh/authorized_keys
+   ```
+3. Write `/opt/fraud-risk-platform/.env` (owned by `deploy`, mode 600) from `.env.example`: a new `JWT_SECRET`, `POSTGRES_PASSWORD`, `ADMIN_EMAIL`, `ADMIN_PASSWORD` and `DOMAIN`.
+4. In the GitHub repository, under Settings, Environments, create `production` with:
+   - variables `DEPLOY_HOST` (the server's name or IP) and `DEPLOY_KNOWN_HOSTS` (the output of `ssh-keyscan <host>`, checked against the server's own fingerprint), and optionally `DEPLOY_USER` (default `deploy`) and `DEPLOY_PATH` (default `/opt/fraud-risk-platform`);
+   - the secret `DEPLOY_SSH_KEY`, the private half of the key pair.
+
+   Adding required reviewers to the environment makes every deploy wait for an approval.
+5. Push to `main` (or re-run the latest CI run). The deploy job copies the compose files and their configs to the server, has it pull the new images with a token that expires with the job, records them as `API_IMAGE` and `WEB_IMAGE` in `.env`, and restarts the stack; migrations run before the new API starts.
+6. Load data once, on the server. Copy the dataset there, set `DATASET_DIR` in `.env`, then:
+   ```bash
+   cd /opt/fraud-risk-platform
+   docker compose -f docker-compose.yml -f docker-compose.prod.yml run --rm seed
+   ```
+   The seed creates the admin; `ADMIN_PASSWORD` can then be removed from `.env`.
+
+### Operating it
+
+- **Rolling back.** Re-run the deploy job of an earlier CI run, or set `API_IMAGE` and `WEB_IMAGE` in the server's `.env` to an earlier `sha-` tag and run `docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d`. Migrations only move forward, so going back past a schema change needs `alembic downgrade` first. A model is rolled back separately, by activating an earlier version on the Models page.
+- **Backups.** The database, and the `data` volume with models, uploads and rules:
+  ```bash
+  docker compose -f docker-compose.yml -f docker-compose.prod.yml exec -T db pg_dump -U fraud -Fc fraud > fraud.dump
+  docker run --rm -v fraud-risk-platform_data:/data -v "$PWD":/backup alpine tar czf /backup/data.tgz -C /data .
+  ```
+- **Monitoring.** The API serves Prometheus metrics at `/metrics`: requests by route and status with latency, scored transactions by band and source with the score distribution, month loads, review outcomes (approved findings by decision are the live precision signal), rate-limited requests and the active model. nginx does not forward it, so it is not public; `docker compose --profile monitoring up -d prometheus` starts a Prometheus that scrapes it, on `127.0.0.1:9090` (reach it through an SSH tunnel). The containers' health checks use `/api/v1/health`; `/api/v1/ready` also checks the database, the model and the rules.
+- **Security headers.** nginx sends a strict Content-Security-Policy (scripts, styles and requests only from the site itself), `X-Frame-Options: DENY`, `nosniff` and `no-referrer`; Caddy adds HSTS. The browser tests fail when a page logs a CSP violation.
+- **Disk.** A release usually adds only a few megabytes, because Python dependencies sit in their own image layer. `docker image prune -a` removes images no container uses.
+- **Other hosts.** The images are configured only through environment variables, so a managed platform can run them too: the API image with `migrate` as its release command and `serve` as its start command, the web image with `API_UPSTREAM` set to the API's host and port, and a managed PostgreSQL.
 
 ## Tests
 
 ```bash
 make test   # pytest for ml/ and backend/, Vitest for frontend/
 make lint   # ruff; tsc, eslint and prettier for the frontend
+make e2e    # Playwright browser tests against the Docker stack (after make docker-up docker-demo)
 ```
 
 Backend tests run against a real PostgreSQL database, which they wipe: `TEST_DATABASE_URL` (default `postgresql+psycopg://fraud:fraud@localhost:5432/fraud_test`). They generate a small synthetic dataset and train a model on it, so no real data is needed.
 
 Frontend tests render the real pages and routes against a fake API (`frontend/src/test/server.ts`), covering sign-in, scoring, URL filters, the maker-checker rules, uploads and admin.
+
+Browser tests (`frontend/e2e/`) drive Chromium through the running stack with the demo data: cookie sign-in and sign-out, every page for each role, scoring, an analyst's finding approved and another rejected by an approver, filters with CSV export, adding and deactivating a user, the security headers and the CSRF check. Each test also fails if a page logs an error or a CSP violation. They sign in as the admin from `.env` and add `e2e-analyst@example.com` and `e2e-approver@example.com` with a new random password on every run, so point them only at a local or CI stack (`E2E_BASE_URL`, default http://localhost:8080). Install the browser once with `cd frontend && npx playwright install chromium`. Two runs within a minute can reach the sign-in rate limit; `RATE_LIMIT_LOGIN=` in `.env` turns it off locally.
 
 ## Repository layout
 
@@ -244,5 +309,9 @@ backend/alembic/       database migrations
 backend/tests/         API tests against PostgreSQL
 frontend/src/          React dashboard: api client and hooks, auth, components, lib, pages
 frontend/openapi.json  API schema the frontend's types are generated from
+frontend/e2e/          Playwright browser tests against the running stack
+infra/                 Dockerfiles, and the nginx, Caddy and Prometheus configs
+docker-compose.yml     the whole app on one machine; docker-compose.prod.yml adds HTTPS
+.github/workflows/     CI: checks, browser tests, image publishing and deploy
 data/                  raw / interim / processed data and uploads (git-ignored)
 ```
