@@ -1,0 +1,34 @@
+# Render Blueprint: a free public demo of the whole app (Render dashboard → New → Blueprint).
+# One container (infra/render/Dockerfile) with synthetic data and a model built in, and a free
+# PostgreSQL. Free services sleep after 15 idle minutes; uploads and models trained in the app
+# are lost when they do. The free database expires 30 days after it is created.
+services:
+  - type: web
+    name: fraud-risk-platform
+    runtime: docker
+    plan: free
+    dockerfilePath: ./infra/render/Dockerfile
+    dockerContext: .
+    healthCheckPath: /healthz
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: fraud-risk-db
+          property: connectionString
+      - key: JWT_SECRET
+        generateValue: true
+      - key: ENVIRONMENT
+        value: prod
+      - key: COOKIE_SECURE
+        value: "true"
+      - key: ADMIN_EMAIL
+        value: admin@example.com
+      # Asked for when the Blueprint is created: the first admin's password, 12+ characters.
+      - key: ADMIN_PASSWORD
+        sync: false
+
+databases:
+  - name: fraud-risk-db
+    plan: free
+    databaseName: fraud
+    user: fraud
